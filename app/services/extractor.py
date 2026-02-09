@@ -3,12 +3,14 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Optional
 
 from app.config import get_settings
 from app.llm_client import llm_client
 from app.models.memory import MemoryCreate, MemoryType
 from app.utils.metrics import metrics
+from app.utils.temporal import parse_temporal_reference
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -118,6 +120,8 @@ class MemoryExtractor:
 
             # Convert to MemoryCreate objects
             memories = []
+            current_time = datetime.utcnow()
+            
             for mem_data in memories_data:
                 try:
                     # Normalize type to lowercase (LLM sometimes returns uppercase)
@@ -129,18 +133,32 @@ class MemoryExtractor:
                     if confidence < settings.memory_confidence_threshold:
                         continue
 
+                    # Parse temporal references and enhance content
+                    original_content = mem_data['content']
+                    enhanced_content, scheduled_date = parse_temporal_reference(
+                        original_content,
+                        reference_date=current_time
+                    )
+                    
+                    # Add scheduled_date to context if extracted
+                    context = {
+                        'user_message': user_message[:200],
+                        'assistant_message': assistant_message[:200],
+                        'extraction_time': current_time.isoformat(),
+                    }
+                    
+                    if scheduled_date:
+                        context['scheduled_date'] = scheduled_date.isoformat()
+                    
                     memory = MemoryCreate(
                         user_id=user_id,
                         type=memory_type,
-                        content=mem_data['content'],
+                        content=enhanced_content,  # Use enhanced content with absolute dates
                         source_turn=turn_number,
                         confidence=confidence,
                         tags=mem_data.get('tags', []),
                         entities=mem_data.get('entities', []),
-                        context={
-                            'user_message': user_message[:200],
-                            'assistant_message': assistant_message[:200],
-                        },
+                        context=context,
                     )
                     memories.append(memory)
 

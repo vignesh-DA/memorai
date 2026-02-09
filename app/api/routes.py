@@ -22,12 +22,14 @@ from app.models.memory import (
     MemoryType,
     MemoryUpdate,
 )
+from app.services.conversation_storage import ConversationStorage
 from app.services.extractor import MemoryExtractor
 from app.services.memory_manager import MemoryManager
 from app.services.retriever import MemoryRetriever
 from app.services.storage import MemoryStorage
 from app.utils.embeddings import EmbeddingGenerator
 from app.utils.metrics import metrics
+from app.utils.temporal import format_relative_time
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -66,6 +68,13 @@ async def get_memory_retriever(
 async def get_memory_extractor():
     """Get memory extractor instance."""
     return MemoryExtractor()
+
+
+async def get_conversation_storage(
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Get conversation storage instance."""
+    return ConversationStorage(session=session)
 
 
 async def get_memory_manager(
@@ -131,13 +140,15 @@ async def process_conversation(
     storage: MemoryStorage = Depends(get_memory_storage),
     retriever: MemoryRetriever = Depends(get_memory_retriever),
     extractor: MemoryExtractor = Depends(get_memory_extractor),
+    conversation_storage: ConversationStorage = Depends(get_conversation_storage),
 ):
     """Process a conversation turn with memory integration.
     
     1. Retrieves relevant memories
     2. Builds context with memories
     3. Calls LLM for response
-    4. Extracts new memories (async)
+    4. Stores full conversation turn
+    5. Extracts new memories (async)
     """
     start_time = time.time()
 
@@ -145,30 +156,180 @@ async def process_conversation(
         from uuid import uuid4
         turn_id = uuid4()
         memories_used = []
+        search_results = []  # Initialize to empty list
 
         # Step 1: Retrieve relevant memories
         if request.include_memories:
-            search_query = MemorySearchQuery(
-                user_id=request.user_id,
-                query=request.message,
-                top_k=settings.memory_retrieval_top_k,
-                current_turn=request.turn_number,
-            )
-            search_results = await retriever.search(search_query)
+            query_text = request.message.lower()
+            
+            # Detect query type for smart filtering
+            is_schedule_query = any(phrase in query_text for phrase in [
+                "schedule", "meeting", "appointment", "calendar", 
+                "tomorrow", "today", "next week", "committed to",
+                "plans for", "busy", "what's on", "agenda"
+            ])
+            
+            is_broad_query = any(phrase in query_text for phrase in [
+                "about me", "about myself", "do you know about me", 
+                "what do you know", "tell me everything", "remember about me",
+                "my details", "each and every", "all details", "everything about",
+                "my fiancee", "my finacee", "details what", "know about",
+                "comprehensive", "full details", "complete information"
+            ])
+            
+            is_everything_query = any(phrase in query_text for phrase in [
+                "each and every", "everything", "all details", "comprehensive",
+                "full details", "complete information", "tell me everything"
+            ])
+            
+            if is_schedule_query:
+                # Schedule-specific search - only COMMITMENT and EPISODIC memories
+                search_query = MemorySearchQuery(
+                    user_id=request.user_id,
+                    query=f"{request.message} schedule meeting appointment commitment plans",
+                    top_k=20,
+                    current_turn=request.turn_number,
+                )
+                search_results = await retriever.search(search_query)
+                
+                # Filter to only COMMITMENT and EPISODIC types for schedules
+                search_results = [
+                    result for result in search_results 
+                    if result.memory.type in [MemoryType.COMMITMENT, MemoryType.EPISODIC]
+                ]
+                
+            elif is_broad_query:
+                # Expand search for comprehensive user info
+                search_query = MemorySearchQuery(
+                    user_id=request.user_id,
+                    query=f"{request.user_id} user information facts details preferences commitments relationships",
+                    top_k=50 if is_everything_query else 30,
+                    current_turn=request.turn_number,
+                )
+                search_results = await retriever.search(search_query)
+            else:
+                # Normal contextual search
+                search_query = MemorySearchQuery(
+                    user_id=request.user_id,
+                    query=request.message,
+                    top_k=settings.memory_retrieval_top_k,
+                    current_turn=request.turn_number,
+                )
+                search_results = await retriever.search(search_query)
+            
             memories_used = [result.memory.memory_id for result in search_results]
 
-            # Format memories for context
-            memory_context = "\n".join([
-                f"- {result.memory.content}"
-                for result in search_results[:5]  # Top 5 for context
-            ])
+            # Format memories for context with full details
+            if search_results:
+                # Check if this is a schedule query for cleaner formatting
+                query_text = request.message.lower()
+                is_schedule_display = any(phrase in query_text for phrase in [
+                    "schedule", "meeting", "appointment", "calendar", "plans"
+                ])
+                
+                if is_schedule_display:
+                    # Clean format for schedule queries - no "Memory #X"
+                    memory_lines = [
+                        f"## YOUR SCHEDULED MEETINGS & COMMITMENTS\n"
+                    ]
+                    for result in search_results[:10]:
+                        mem = result.memory
+                        content = format_relative_time(mem.content, mem.metadata.created_at)
+                        memory_lines.append(f"• {content}")
+                else:
+                    # Standard format for other queries
+                    query_text = request.message.lower()
+                    is_everything = any(phrase in query_text for phrase in [
+                        "each and every", "everything", "all details"
+                    ])
+                    display_count = 30 if is_everything else 15
+                    
+                    memory_lines = [
+                        f"## RELEVANT MEMORIES ({len(search_results[:display_count])} found)\n"
+                    ]
+                    for i, result in enumerate(search_results[:display_count], 1):
+                        mem = result.memory
+                        content = format_relative_time(mem.content, mem.metadata.created_at)
+                        memory_lines.append(f"{i}. {content} (Type: {mem.type.value})")
+                
+                memory_context = "\n".join(memory_lines)
+            else:
+                memory_context = "No relevant memories found from previous turns."
         else:
             memory_context = ""
 
         # Step 2: Build prompt with memories
-        system_prompt = """You are a helpful AI assistant with memory of past conversations.
-Use relevant memories to provide personalized, context-aware responses.
-Respond naturally without explicitly mentioning that you're using memories."""
+        query_text = request.message.lower()
+        is_schedule_query = any(phrase in query_text for phrase in [
+            "schedule", "meeting", "appointment", "calendar", "tomorrow", "today"
+        ])
+        
+        if is_schedule_query and search_results:
+            # Schedule-specific prompt - only show schedule info
+            system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
+
+## CURRENT CONTEXT
+- Turn Number: {request.turn_number}
+- User ID: {request.user_id}
+- Query Type: SCHEDULE/MEETING REQUEST
+- Memories Retrieved: {len(search_results)} schedule-related memories
+
+## INSTRUCTIONS FOR SCHEDULE QUERIES
+1. The user is asking about their SCHEDULE/MEETINGS only
+2. Show ONLY schedule-related information (meetings, appointments, commitments)
+3. Include the DATE and TIME for each item
+4. Do NOT mention unrelated info like relationships, skills, or other facts
+5. Format: "You have [event] on [date] at [time]"
+6. If no schedule found, say "I don't have any scheduled meetings or appointments"""
+        else:
+            # Check if user wants EVERYTHING
+            query_text = request.message.lower()
+            is_everything = any(phrase in query_text for phrase in [
+                "each and every", "everything", "all details", "comprehensive",
+                "full details", "complete information", "tell me everything"
+            ])
+            
+            # General prompt
+            if is_everything:
+                system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
+
+## CURRENT CONTEXT
+- Turn Number: {request.turn_number}
+- User ID: {request.user_id}
+- Memories Retrieved: {len(search_results) if request.include_memories else 0}
+
+## 🚨 COMPREHENSIVE INFORMATION REQUEST 🚨
+The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
+
+1. **LIST EVERY SINGLE MEMORY PROVIDED BELOW**
+2. **DO NOT SUMMARIZE** - show full details from each memory
+3. **Organize by categories:**
+   - 👤 Personal Information (name, age, location)
+   - 💼 Professional Details (job, experience, skills)
+   - 👥 Relationships (fiancé, family, friends)
+   - 🍽️ Preferences (food, hobbies, interests)
+   - 📅 Commitments (meetings, appointments, schedules)
+   - 💭 Other Facts
+
+4. **For each category, list ALL relevant details** - don't skip anything
+5. **Include dates/times for schedules**
+6. **Be thorough and complete** - the user wants EVERYTHING
+
+⚠️ FAILURE TO LIST ALL MEMORIES WILL DISAPPOINT THE USER ⚠️"""
+            else:
+                system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
+
+## CURRENT CONTEXT
+- Turn Number: {request.turn_number}
+- User ID: {request.user_id}
+- Memories Retrieved: {len(search_results) if request.include_memories else 0}
+
+## CRITICAL INSTRUCTIONS
+1. Focus on what the user is ACTUALLY asking about
+2. Use memories that are RELEVANT to their specific question
+3. For broad questions ("what do you know about me"), include all details
+4. For specific questions, focus only on that topic
+5. Be concise unless asked for comprehensive information"""
 
         messages = [
             {"role": "system", "content": system_prompt}
@@ -177,12 +338,12 @@ Respond naturally without explicitly mentioning that you're using memories."""
         if memory_context:
             messages.append({
                 "role": "system",
-                "content": f"RELEVANT MEMORIES:\n{memory_context}"
+                "content": f"\n{memory_context}\n"
             })
 
         messages.append({
             "role": "user",
-            "content": request.message
+            "content": f"USER'S MESSAGE (Turn {request.turn_number}):\n{request.message}"
         })
 
         # Step 3: Call LLM using unified client
@@ -207,7 +368,17 @@ Respond naturally without explicitly mentioning that you're using memories."""
             completion_tokens=0,
         )
 
-        # Step 4: Extract new memories asynchronously
+        # Step 4: Store full conversation turn in database
+        await conversation_storage.store_turn(
+            user_id=request.user_id,
+            turn_number=request.turn_number,
+            user_message=request.message,
+            assistant_message=assistant_message,
+            memories_retrieved=memories_used,
+            metadata=request.metadata,
+        )
+
+        # Step 5: Extract new memories asynchronously
         # Note: We need to pass session-independent parameters and create new session
         asyncio.create_task(
             _extract_and_store_memories_independent(
@@ -374,6 +545,36 @@ async def apply_memory_decay(
     """Apply time-based decay to all memories."""
     count = await manager.apply_decay()
     return {"updated_count": count}
+
+
+# Conversation history endpoints
+@router.get("/conversations/{user_id}/history")
+async def get_conversation_history(
+    user_id: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    before_turn: Optional[int] = Query(default=None),
+    conversation_storage: ConversationStorage = Depends(get_conversation_storage),
+):
+    """Get conversation history for a user.
+    
+    Args:
+        user_id: User identifier
+        limit: Maximum number of turns to retrieve  
+        before_turn: Only get turns before this number
+        
+    Returns:
+        List of conversation turns
+    """
+    try:
+        turns = await conversation_storage.get_recent_turns(
+            user_id=user_id,
+            limit=limit,
+            before_turn=before_turn,
+        )
+        return turns
+    except Exception as e:
+        logger.error(f"Failed to retrieve conversation history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Health check
