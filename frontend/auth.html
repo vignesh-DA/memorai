@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory AI - Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .auth-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 420px;
+            overflow: hidden;
+        }
+
+        .auth-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+
+        .auth-header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        .auth-header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .auth-body {
+            padding: 40px 30px;
+        }
+
+        .tab-switch {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #667eea;
+            background: white;
+            color: #667eea;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .tab-btn.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .tab-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        input.error {
+            border-color: #e74c3c;
+        }
+
+        input.success {
+            border-color: #27ae60;
+        }
+
+        .password-hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .password-hint.error {
+            color: #e74c3c;
+        }
+
+        .password-hint.success {
+            color: #27ae60;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .submit-btn:active {
+            transform: translateY(0);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .error-message {
+            background: #fee;
+            border: 1px solid #fcc;
+            padding: 12px;
+            border-radius: 8px;
+            color: #c33;
+            font-size: 14px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .success-message {
+            background: #efe;
+            border: 1px solid #cfc;
+            padding: 12px;
+            border-radius: 8px;
+            color: #3c3;
+            font-size: 14px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .form-panel {
+            display: none;
+        }
+
+        .form-panel.active {
+            display: block;
+        }
+
+        .divider {
+            text-align: center;
+            margin: 25px 0;
+            color: #999;
+            font-size: 13px;
+        }
+
+        .feature-list {
+            list-style: none;
+            margin-top: 20px;
+        }
+
+        .feature-list li {
+            padding: 8px 0;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .feature-list li:before {
+            content: "✓ ";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-container">
+        <div class="auth-header">
+            <h1>🧠 Memory AI</h1>
+            <p>Long-form conversation memory system</p>
+        </div>
+
+        <div class="auth-body">
+            <div class="tab-switch">
+                <button class="tab-btn active" onclick="switchTab('login')">Login</button>
+                <button class="tab-btn" onclick="switchTab('register')">Register</button>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+            <div id="successMessage" class="success-message"></div>
+
+            <!-- Login Form -->
+            <div id="loginPanel" class="form-panel active">
+                <form id="loginForm" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="loginEmail">Email</label>
+                        <input 
+                            type="email" 
+                            id="loginEmail" 
+                            required 
+                            placeholder="your@email.com"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="loginPassword">Password</label>
+                        <input 
+                            type="password" 
+                            id="loginPassword" 
+                            required 
+                            placeholder="••••••••"
+                        >
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="loginBtn">
+                        Sign In
+                    </button>
+                </form>
+
+                <ul class="feature-list">
+                    <li>Persistent long-term memory across conversations</li>
+                    <li>Smart context retrieval based on relevance</li>
+                    <li>Automatic profile building from interactions</li>
+                </ul>
+            </div>
+
+            <!-- Register Form -->
+            <div id="registerPanel" class="form-panel">
+                <form id="registerForm" onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label for="registerEmail">Email</label>
+                        <input 
+                            type="email" 
+                            id="registerEmail" 
+                            required 
+                            placeholder="your@email.com"
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="registerPassword">Password</label>
+                        <input 
+                            type="password" 
+                            id="registerPassword" 
+                            required 
+                            minlength="8"
+                            maxlength="72"
+                            placeholder="••••••••"
+                        >
+                        <div class="password-hint">8-72 characters</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="registerConfirmPassword">Confirm Password</label>
+                        <input 
+                            type="password" 
+                            id="registerConfirmPassword" 
+                            required 
+                            minlength="8"
+                            maxlength="72"
+                            placeholder="••••••••"
+                        >
+                        <div class="password-hint">Re-enter your password</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="registerName">Full Name (optional)</label>
+                        <input 
+                            type="text" 
+                            id="registerName" 
+                            placeholder="John Doe"
+                        >
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="registerBtn">
+                        Create Account
+                    </button>
+                </form>
+
+                <ul class="feature-list">
+                    <li>Free tier: 1000 memories, 100 requests/day</li>
+                    <li>Secure JWT authentication</li>
+                    <li>Complete data isolation per user</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/v1';
+
+        function switchTab(tab) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-btn').forEach((btn, index) => {
+                btn.classList.remove('active');
+                if ((tab === 'login' && index === 0) || (tab === 'register' && index === 1)) {
+                    btn.classList.add('active');
+                }
+            });
+
+            // Update panels
+            document.getElementById('loginPanel').classList.remove('active');
+            document.getElementById('registerPanel').classList.remove('active');
+            
+            if (tab === 'login') {
+                document.getElementById('loginPanel').classList.add('active');
+            } else {
+                document.getElementById('registerPanel').classList.add('active');
+            }
+
+            // Clear messages
+            hideMessage();
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('errorMessage');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+            document.getElementById('successMessage').style.display = 'none';
+        }
+
+        function showSuccess(message) {
+            const successEl = document.getElementById('successMessage');
+            successEl.textContent = message;
+            successEl.style.display = 'block';
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function hideMessage() {
+            document.getElementById('errorMessage').style.display = 'none';
+            document.getElementById('successMessage').style.display = 'none';
+        }
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            const btn = document.getElementById('loginBtn');
+            
+            btn.disabled = true;
+            btn.textContent = 'Signing in...';
+            hideMessage();
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Login failed');
+                }
+
+                // Store tokens
+                localStorage.setItem('access_token', data.access_token);
+                localStorage.setItem('refresh_token', data.refresh_token);
+                localStorage.setItem('user_email', email);
+
+                showSuccess('Login successful! Redirecting...');
+                
+                // Redirect to chat
+                setTimeout(() => {
+                    window.location.href = '/';
+                }, 1000);
+
+            } catch (error) {
+                let errorMessage = error.message || 'Login failed. Please try again.';
+                
+                // Make error messages more user-friendly
+                if (errorMessage.includes('Incorrect email or password')) {
+                    errorMessage = 'Incorrect email or password. Please check your credentials and try again.';
+                } else if (errorMessage.includes('Failed to fetch')) {
+                    errorMessage = 'Unable to connect to server. Please check your connection.';
+                }
+                
+                showError(errorMessage);
+                btn.disabled = false;
+                btn.textContent = 'Sign In';
+            }
+        }
+
+        async function handleRegister(event) {
+            event.preventDefault();
+            
+            const email = document.getElementById('registerEmail').value;
+            const password = document.getElementById('registerPassword').value;
+            const confirmPassword = document.getElementById('registerConfirmPassword').value;
+            const name = document.getElementById('registerName').value;
+            const btn = document.getElementById('registerBtn');
+            
+            // Validate passwords match
+            if (password !== confirmPassword) {
+                showError('Passwords do not match. Please try again.');
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Creating account...';
+            hideMessage();
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        email, 
+                        password,
+                        full_name: name || email.split('@')[0]
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Registration failed');
+                }
+
+                showSuccess('Account created successfully! Please log in.');
+                
+                // Clear form
+                document.getElementById('registerForm').reset();
+                
+                // Switch to login tab after 1.5 seconds
+                setTimeout(() => {
+                    switchTab('login');
+                    // Pre-fill email
+                    document.getElementById('loginEmail').value = email;
+                }, 1500);
+
+            } catch (error) {
+                let errorMessage = error.message || 'Registration failed. Please try again.';
+                
+                // Make error messages more user-friendly
+                if (errorMessage.includes('Email already registered')) {
+                    errorMessage = 'This email is already registered. Please log in or use a different email.';
+                } else if (errorMessage.includes('Failed to fetch')) {
+                    errorMessage = 'Unable to connect to server. Please check your connection.';
+                }
+                
+                showError(errorMessage);
+                btn.disabled = false;
+                btn.textContent = 'Create Account';
+            }
+        }
+
+        // Check if already logged in
+        if (localStorage.getItem('access_token')) {
+            window.location.href = '/';
+        }
+
+        // Real-time password confirmation validation
+        document.addEventListener('DOMContentLoaded', function() {
+            const password = document.getElementById('registerPassword');
+            const confirmPassword = document.getElementById('registerConfirmPassword');
+            const confirmHint = confirmPassword.nextElementSibling;
+
+            function validatePasswordMatch() {
+                if (confirmPassword.value === '') {
+                    confirmPassword.classList.remove('error', 'success');
+                    confirmHint.classList.remove('error', 'success');
+                    confirmHint.textContent = 'Re-enter your password';
+                    return;
+                }
+
+                if (password.value === confirmPassword.value) {
+                    confirmPassword.classList.remove('error');
+                    confirmPassword.classList.add('success');
+                    confirmHint.classList.remove('error');
+                    confirmHint.classList.add('success');
+                    confirmHint.textContent = '✓ Passwords match';
+                } else {
+                    confirmPassword.classList.remove('success');
+                    confirmPassword.classList.add('error');
+                    confirmHint.classList.remove('success');
+                    confirmHint.classList.add('error');
+                    confirmHint.textContent = '✗ Passwords do not match';
+                }
+            }
+
+            if (password && confirmPassword) {
+                password.addEventListener('input', validatePasswordMatch);
+                confirmPassword.addEventListener('input', validatePasswordMatch);
+            }
+        });
+    </script>
+</body>
+</html>

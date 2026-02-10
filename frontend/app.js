@@ -1,11 +1,48 @@
 // API Configuration
 const API_BASE = 'http://localhost:8000/api/v1';
 
+// Get auth token
+function getAuthToken() {
+    return localStorage.getItem('access_token');
+}
+
+// Get auth headers
+function getAuthHeaders() {
+    const token = getAuthToken();
+    if (!token) {
+        console.error('No access token found!');
+        return {
+            'Content-Type': 'application/json'
+        };
+    }
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+    };
+}
+
+// Check if user is authenticated
+function checkAuth() {
+    if (!getAuthToken()) {
+        window.location.href = 'auth.html';
+        return false;
+    }
+    return true;
+}
+
+// Logout function
+function logout() {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('user_email');
+    window.location.href = 'auth.html';
+}
+
 // State Management
 let state = {
     turnNumber: 0,
     isLoading: false,
-    userId: 'demo_user',
+    userEmail: localStorage.getItem('user_email') || 'User',
     totalProcessingTime: 0,
     messageCount: 0
 };
@@ -32,9 +69,48 @@ const elements = {
 
 // Initialize App
 function init() {
+    // Check authentication first
+    if (!checkAuth()) return;
+    
     setupEventListeners();
+    validateToken();  // Validate token before making other requests
     checkAPIHealth();
     loadStats();
+    
+    // Display user email
+    const userDisplay = document.getElementById('userId');
+    if (userDisplay) {
+        userDisplay.textContent = state.userEmail;
+        userDisplay.removeAttribute('contenteditable');
+    }
+}
+
+// Validate authentication token
+async function validateToken() {
+    try {
+        const response = await fetch(`${API_BASE}/auth/me`, {
+            headers: getAuthHeaders()
+        });
+        
+        if (!response.ok) {
+            throw new Error('Token validation failed');
+        }
+        
+        const user = await response.json();
+        state.userEmail = user.email;
+        
+        // Update display
+        const userDisplay = document.getElementById('userId');
+        if (userDisplay) {
+            userDisplay.textContent = user.email;
+        }
+    } catch (error) {
+        console.error('Token validation failed:', error);
+        // Clear invalid token and redirect to login
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('refresh_token');
+        window.location.href = 'auth.html';
+    }
 }
 
 // Event Listeners
@@ -46,9 +122,6 @@ function setupEventListeners() {
     elements.sendBtn.addEventListener('click', sendMessage);
     elements.messageInput.addEventListener('keydown', handleKeyPress);
     
-    // User ID change
-    elements.userId.addEventListener('change', handleUserIdChange);
-    
     // Search
     elements.toggleSearchBtn.addEventListener('click', toggleSearch);
     elements.closeSearchBtn.addEventListener('click', toggleSearch);
@@ -57,6 +130,12 @@ function setupEventListeners() {
     
     // New chat
     elements.newChatBtn.addEventListener('click', newChat);
+    
+    // Logout button
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
 }
 
 // Textarea Auto-resize
@@ -91,16 +170,14 @@ function handleUserIdChange() {
 async function sendMessage() {
     if (state.isLoading) return;
 
-    const userId = elements.userId.value.trim();
     const message = elements.messageInput.value.trim();
     
-    if (!userId || !message) {
-        showToast('Please enter both User ID and message', 'error');
+    if (!message) {
+        showToast('Please enter a message', 'error');
         return;
     }
 
     state.isLoading = true;
-    state.userId = userId;
     elements.sendBtn.disabled = true;
     elements.sendBtnText.textContent = 'Sending...';
 
@@ -122,9 +199,8 @@ async function sendMessage() {
     try {
         const response = await fetch(`${API_BASE}/conversation`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders(),
             body: JSON.stringify({
-                user_id: userId,
                 turn_number: state.turnNumber,
                 message: message,
                 include_memories: true
@@ -135,7 +211,20 @@ async function sendMessage() {
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+            const errorMessage = errorData.detail || `HTTP error! status: ${response.status}`;
+            
+            // If unauthorized, redirect to login
+            if (response.status === 401) {
+                showToast('Session expired. Please log in again.', 'error');
+                setTimeout(() => {
+                    localStorage.removeItem('access_token');
+                    localStorage.removeItem('refresh_token');
+                    window.location.href = 'auth.html';
+                }, 2000);
+                return;
+            }
+            
+            throw new Error(errorMessage);
         }
 
         const data = await response.json();
@@ -222,11 +311,10 @@ function hideLoading() {
 
 // Load Statistics
 async function loadStats() {
-    const userId = elements.userId.value.trim();
-    if (!userId) return;
-
     try {
-        const response = await fetch(`${API_BASE}/memories/${userId}/stats`);
+        const response = await fetch(`${API_BASE}/memories/stats`, {
+            headers: getAuthHeaders()
+        });
         if (response.ok) {
             const stats = await response.json();
             elements.memoryCount.textContent = stats.total_memories;
@@ -253,19 +341,23 @@ function toggleSearch() {
 
 // Search Memories
 async function searchMemories() {
-    const userId = elements.userId.value.trim();
     const query = elements.searchInput.value.trim();
     
-    if (!userId || !query) {
-        showToast('Please enter both User ID and search query', 'error');
+    if (!query) {
+        showToast('Please enter a search query', 'error');
         return;
     }
 
     elements.searchResults.innerHTML = '<div class="loading-indicator"><span>Searching...</span></div>';
 
     try {
-        const response = await fetch(`${API_BASE}/memories/${userId}/search?query=${encodeURIComponent(query)}&top_k=10`, {
-            method: 'POST'
+        const response = await fetch(`${API_BASE}/memories/search`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({
+                query: query,
+                top_k: 10
+            })
         });
 
         if (!response.ok) {
@@ -344,7 +436,7 @@ function escapeHtml(text) {
 // Check API Health
 async function checkAPIHealth() {
     try {
-        const response = await fetch(`${API_BASE}/health`);
+        const response = await fetch('http://localhost:8000/api/health');
         if (response.ok) {
             showToast('Connected to Memory AI', 'success');
         } else {

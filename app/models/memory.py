@@ -29,11 +29,13 @@ class MemoryMetadata(BaseModel):
     access_count: int = Field(default=0, ge=0)
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score of memory accuracy")
     decay_score: float = Field(default=1.0, ge=0.0, le=1.0, description="Temporal decay factor")
+    importance_score: float = Field(default=0.7, ge=0.0, le=1.0, description="Importance weight (0-1)")
+    importance_level: str = Field(default="medium", description="Importance level (critical/high/medium/low)")
     tags: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("confidence", "decay_score")
+    @field_validator("confidence", "decay_score", "importance_score")
     @classmethod
     def validate_score_range(cls, v: float) -> float:
         """Ensure scores are between 0 and 1."""

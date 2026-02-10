@@ -58,11 +58,22 @@ class EmbeddingGenerator:
         # Initialize based on provider
         if settings.embedding_provider == "sentence-transformers":
             if not SENTENCE_TRANSFORMERS_AVAILABLE:
-                raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
-            self.st_model = _get_sentence_transformer(settings.embedding_model)
-            self.dimension = self.st_model.get_sentence_embedding_dimension()
-            self.use_openai = False
-            self.model = settings.embedding_model
+                logger.error("sentence-transformers not available but configured as provider")
+                logger.error("Install with: pip install sentence-transformers")
+                raise ImportError(
+                    "sentence-transformers not installed. "
+                    "Run: pip install sentence-transformers OR "
+                    "Change EMBEDDING_PROVIDER=openai in .env"
+                )
+            try:
+                self.st_model = _get_sentence_transformer(settings.embedding_model)
+                self.dimension = self.st_model.get_sentence_embedding_dimension()
+                self.use_openai = False
+                self.model = settings.embedding_model
+                logger.info(f"✅ Sentence Transformers initialized: {self.model} (dim={self.dimension})")
+            except Exception as e:
+                logger.error(f"Failed to load sentence-transformers model: {e}")
+                raise
         else:
             self.client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
             self.model = settings.openai_embedding_model
@@ -173,9 +184,13 @@ class EmbeddingGenerator:
                     try:
                         cached = await self.redis.get(cache_key)
                         if cached:
-                            batch_embeddings.append(
-                                [float(x) for x in cached.decode().split(",")]
-                            )
+                            # Try JSON first (sentence-transformers), fallback to CSV (OpenAI legacy)
+                            try:
+                                batch_embeddings.append(json.loads(cached))
+                            except (json.JSONDecodeError, TypeError):
+                                batch_embeddings.append(
+                                    [float(x) for x in cached.decode().split(",")]
+                                )
                             continue
                     except Exception:
                         pass
@@ -188,28 +203,49 @@ class EmbeddingGenerator:
             # Generate embeddings for uncached texts
             if uncached_texts:
                 try:
-                    response = await self.client.embeddings.create(
-                        input=uncached_texts,
-                        model=self.model,
-                    )
-                    
-                    # Insert generated embeddings
-                    for idx, embedding_data in enumerate(response.data):
-                        embedding = embedding_data.embedding
-                        batch_embeddings[uncached_indices[idx]] = embedding
+                    if self.use_openai:
+                        # OpenAI API batch generation
+                        response = await self.client.embeddings.create(
+                            input=uncached_texts,
+                            model=self.model,
+                        )
                         
-                        # Cache the result
-                        if self.redis:
-                            try:
-                                cache_key = self._cache_key(uncached_texts[idx])
-                                cache_value = ",".join(str(x) for x in embedding)
-                                await self.redis.setex(
-                                    cache_key,
-                                    self.cache_ttl,
-                                    cache_value,
-                                )
-                            except Exception as e:
-                                logger.warning(f"Cache write error: {e}")
+                        # Insert generated embeddings
+                        for idx, embedding_data in enumerate(response.data):
+                            embedding = embedding_data.embedding
+                            batch_embeddings[uncached_indices[idx]] = embedding
+                            
+                            # Cache the result
+                            if self.redis:
+                                try:
+                                    cache_key = self._cache_key(uncached_texts[idx])
+                                    await self.redis.setex(
+                                        cache_key,
+                                        self.cache_ttl,
+                                        json.dumps(embedding),
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Cache write error: {e}")
+                    else:
+                        # Sentence Transformers batch generation (synchronous)
+                        batch_embeddings_list = self.st_model.encode(uncached_texts, convert_to_numpy=True)
+                        
+                        # Insert generated embeddings
+                        for idx, embedding_array in enumerate(batch_embeddings_list):
+                            embedding = embedding_array.tolist()
+                            batch_embeddings[uncached_indices[idx]] = embedding
+                            
+                            # Cache the result
+                            if self.redis:
+                                try:
+                                    cache_key = self._cache_key(uncached_texts[idx])
+                                    await self.redis.setex(
+                                        cache_key,
+                                        self.cache_ttl,
+                                        json.dumps(embedding),
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Cache write error: {e}")
 
                 except Exception as e:
                     logger.error(f"Batch embedding generation failed: {e}")

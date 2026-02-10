@@ -9,8 +9,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import get_current_user
 from app.config import get_settings
 from app.database import db_manager, get_db_session
+from app.models.auth import User
 from app.llm_client import llm_client
 from app.models.conversation import ConversationRequest, ConversationResponse
 from app.models.memory import (
@@ -37,10 +39,24 @@ settings = get_settings()
 router = APIRouter(prefix="/api/v1", tags=["memory"])
 
 
+# Cached embedding generator instance
+_embedding_generator_cache = None
+
 # Dependency injection
 async def get_embedding_generator():
-    """Get embedding generator instance."""
-    return EmbeddingGenerator(redis_client=db_manager.redis)
+    """Get embedding generator instance (cached)."""
+    global _embedding_generator_cache
+    if _embedding_generator_cache is None:
+        try:
+            _embedding_generator_cache = EmbeddingGenerator(redis_client=db_manager.redis)
+        except ImportError as e:
+            logger.error(f"Failed to initialize EmbeddingGenerator: {e}")
+            logger.error("Make sure sentence-transformers is installed: pip install sentence-transformers")
+            raise HTTPException(
+                status_code=503,
+                detail="Embedding service unavailable. sentence-transformers not installed."
+            )
+    return _embedding_generator_cache
 
 
 async def get_memory_storage(
@@ -122,13 +138,44 @@ async def _extract_and_store_memories_independent(
             
             logger.info(f"✅ Extracted {len(memories)} memories")
 
-            # Store memories
+            # Get existing user memories for conflict detection
+            existing_memories = await storage.get_user_memories(user_id=user_id, limit=200)
+
+            # Store memories, update profile, and check conflicts
+            from app.services.profile_manager import profile_manager
+            from app.utils.conflict_resolver import MemoryConflictResolver
+            
             for memory in memories:
-                await storage.create_memory(memory)
+                stored_memory = await storage.create_memory(memory)
+                
+                # Auto-update user profile from memory
+                try:
+                    await profile_manager.update_profile_from_memory(
+                        user_id=user_id,
+                        memory_content=memory.content,
+                        memory_type=memory.type.value,
+                        entities=memory.entities,
+                        context=memory.context
+                    )
+                except Exception as e:
+                    logger.warning(f"Profile update failed for memory: {e}")
+                
+                # Check for conflicts with existing memories
+                try:
+                    resolution = await MemoryConflictResolver.detect_and_resolve(
+                        new_memory=stored_memory,
+                        user_memories=existing_memories,
+                        storage=storage
+                    )
+                    if resolution:
+                        logger.info(f"Conflict resolved using strategy: {resolution}")
+                except Exception as e:
+                    logger.warning(f"Conflict resolution failed: {e}")
+
             
             await session.commit()
 
-            logger.info(f"Stored {len(memories)} memories for turn {turn_number}")
+            logger.info(f"Stored {len(memories)} memories and updated profile for turn {turn_number}")
     except Exception as e:
         logger.error(f"Background memory extraction failed: {e}", exc_info=True)
 
@@ -137,6 +184,7 @@ async def _extract_and_store_memories_independent(
 @router.post("/conversation", response_model=ConversationResponse)
 async def process_conversation(
     request: ConversationRequest,
+    current_user: User = Depends(get_current_user),
     storage: MemoryStorage = Depends(get_memory_storage),
     retriever: MemoryRetriever = Depends(get_memory_retriever),
     extractor: MemoryExtractor = Depends(get_memory_extractor),
@@ -162,6 +210,12 @@ async def process_conversation(
         if request.include_memories:
             query_text = request.message.lower()
             
+            # Detect if this is a new conversation start (generic greeting)
+            is_greeting = any(phrase in query_text for phrase in [
+                "hi", "hello", "hey", "greetings", "good morning", "good afternoon",
+                "good evening", "what's up", "howdy", "sup"
+            ]) and len(query_text.split()) <= 5  # Short greeting
+            
             # Detect query type for smart filtering
             is_schedule_query = any(phrase in query_text for phrase in [
                 "schedule", "meeting", "appointment", "calendar", 
@@ -182,10 +236,22 @@ async def process_conversation(
                 "full details", "complete information", "tell me everything"
             ])
             
-            if is_schedule_query:
+            # Priority order: greetings (for turn 1) → schedule → broad → normal
+            if (request.turn_number == 1 or is_greeting) and not is_broad_query:
+                # For first turn or generic greetings, load user profile automatically
+                logger.info(f"🎯 New conversation/greeting detected (turn {request.turn_number}) - loading user profile")
+                search_query = MemorySearchQuery(
+                    user_id=current_user.user_id,
+                    query=f"{current_user.user_id} user name facts preferences important information",
+                    top_k=15,  # Load top 15 most important memories
+                    current_turn=request.turn_number,
+                )
+                search_results = await retriever.search(search_query)
+            
+            elif is_schedule_query:
                 # Schedule-specific search - only COMMITMENT and EPISODIC memories
                 search_query = MemorySearchQuery(
-                    user_id=request.user_id,
+                    user_id=current_user.user_id,
                     query=f"{request.message} schedule meeting appointment commitment plans",
                     top_k=20,
                     current_turn=request.turn_number,
@@ -201,8 +267,8 @@ async def process_conversation(
             elif is_broad_query:
                 # Expand search for comprehensive user info
                 search_query = MemorySearchQuery(
-                    user_id=request.user_id,
-                    query=f"{request.user_id} user information facts details preferences commitments relationships",
+                    user_id=current_user.user_id,
+                    query=f"{current_user.user_id} user information facts details preferences commitments relationships",
                     top_k=50 if is_everything_query else 30,
                     current_turn=request.turn_number,
                 )
@@ -210,7 +276,7 @@ async def process_conversation(
             else:
                 # Normal contextual search
                 search_query = MemorySearchQuery(
-                    user_id=request.user_id,
+                    user_id=current_user.user_id,
                     query=request.message,
                     top_k=settings.memory_retrieval_top_k,
                     current_turn=request.turn_number,
@@ -270,7 +336,7 @@ async def process_conversation(
 
 ## CURRENT CONTEXT
 - Turn Number: {request.turn_number}
-- User ID: {request.user_id}
+- User ID: {current_user.user_id}
 - Query Type: SCHEDULE/MEETING REQUEST
 - Memories Retrieved: {len(search_results)} schedule-related memories
 
@@ -295,7 +361,7 @@ async def process_conversation(
 
 ## CURRENT CONTEXT
 - Turn Number: {request.turn_number}
-- User ID: {request.user_id}
+- User ID: {current_user.user_id}
 - Memories Retrieved: {len(search_results) if request.include_memories else 0}
 
 ## 🚨 COMPREHENSIVE INFORMATION REQUEST 🚨
@@ -321,7 +387,7 @@ The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
 
 ## CURRENT CONTEXT
 - Turn Number: {request.turn_number}
-- User ID: {request.user_id}
+- User ID: {current_user.user_id}
 - Memories Retrieved: {len(search_results) if request.include_memories else 0}
 
 ## CRITICAL INSTRUCTIONS
@@ -370,7 +436,7 @@ The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
 
         # Step 4: Store full conversation turn in database
         await conversation_storage.store_turn(
-            user_id=request.user_id,
+            user_id=current_user.user_id,
             turn_number=request.turn_number,
             user_message=request.message,
             assistant_message=assistant_message,
@@ -382,7 +448,7 @@ The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
         # Note: We need to pass session-independent parameters and create new session
         asyncio.create_task(
             _extract_and_store_memories_independent(
-                user_id=request.user_id,
+                user_id=current_user.user_id,
                 turn_number=request.turn_number,
                 user_message=request.message,
                 assistant_message=assistant_message,
@@ -393,7 +459,7 @@ The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
 
         return ConversationResponse(
             turn_id=turn_id,
-            user_id=request.user_id,
+            user_id=current_user.user_id,
             turn_number=request.turn_number,
             response=assistant_message,
             memories_used=memories_used,
@@ -480,61 +546,61 @@ async def delete_memory(
 
 
 # Search endpoints
-@router.post("/memories/{user_id}/search", response_model=list[MemorySearchResult])
+@router.post("/memories/search", response_model=list[MemorySearchResult])
 async def search_memories(
-    user_id: str,
     query: str = Query(..., description="Search query"),
     top_k: int = Query(10, ge=1, le=100, description="Number of results"),
+    current_user: User = Depends(get_current_user),
     retriever: MemoryRetriever = Depends(get_memory_retriever),
 ):
-    """Search memories for a user."""
+    """Search memories for authenticated user."""
     search_query = MemorySearchQuery(
-        user_id=user_id,
+        user_id=current_user.user_id,
         query=query,
         top_k=top_k,
     )
     return await retriever.search(search_query)
 
 
-@router.get("/memories/{user_id}/list", response_model=list[Memory])
+@router.get("/memories/list", response_model=list[Memory])
 async def list_memories(
-    user_id: str,
+    current_user: User = Depends(get_current_user),
     memory_type: Optional[MemoryType] = None,
     limit: int = Query(50, ge=1, le=200),
     storage: MemoryStorage = Depends(get_memory_storage),
 ):
-    """List memories for a user."""
-    return await storage.list_memories(user_id, memory_type=memory_type, limit=limit)
+    """List memories for authenticated user."""
+    return await storage.list_memories(current_user.user_id, memory_type=memory_type, limit=limit)
 
 
-@router.get("/memories/{user_id}/stats", response_model=MemoryStats)
+@router.get("/memories/stats", response_model=MemoryStats)
 async def get_memory_stats(
-    user_id: str,
+    current_user: User = Depends(get_current_user),
     storage: MemoryStorage = Depends(get_memory_storage),
 ):
-    """Get memory statistics for a user."""
-    return await storage.get_user_stats(user_id)
+    """Get memory statistics for authenticated user."""
+    return await storage.get_user_stats(current_user.user_id)
 
 
 # Management endpoints
-@router.post("/memories/{user_id}/consolidate")
+@router.post("/memories/consolidate")
 async def consolidate_memories(
-    user_id: str,
+    current_user: User = Depends(get_current_user),
     manager: MemoryManager = Depends(get_memory_manager),
 ):
-    """Consolidate similar memories for a user."""
-    count = await manager.consolidate_similar_memories(user_id)
+    """Consolidate similar memories for authenticated user."""
+    count = await manager.consolidate_similar_memories(current_user.user_id)
     return {"consolidated_count": count}
 
 
-@router.post("/memories/{user_id}/cleanup")
+@router.post("/memories/cleanup")
 async def cleanup_old_memories(
-    user_id: str,
     days: int = Query(90, ge=1, description="Delete memories older than N days"),
+    current_user: User = Depends(get_current_user),
     manager: MemoryManager = Depends(get_memory_manager),
 ):
-    """Clean up old memories for a user."""
-    count = await manager.cleanup_old_memories(user_id, days=days)
+    """Clean up old memories for authenticated user."""
+    count = await manager.cleanup_old_memories(current_user.user_id, days=days)
     return {"deleted_count": count}
 
 
@@ -548,17 +614,16 @@ async def apply_memory_decay(
 
 
 # Conversation history endpoints
-@router.get("/conversations/{user_id}/history")
+@router.get("/conversations/history")
 async def get_conversation_history(
-    user_id: str,
+    current_user: User = Depends(get_current_user),
     limit: int = Query(default=10, ge=1, le=100),
     before_turn: Optional[int] = Query(default=None),
     conversation_storage: ConversationStorage = Depends(get_conversation_storage),
 ):
-    """Get conversation history for a user.
+    """Get conversation history for authenticated user.
     
     Args:
-        user_id: User identifier
         limit: Maximum number of turns to retrieve  
         before_turn: Only get turns before this number
         
@@ -567,7 +632,7 @@ async def get_conversation_history(
     """
     try:
         turns = await conversation_storage.get_recent_turns(
-            user_id=user_id,
+            user_id=current_user.user_id,
             limit=limit,
             before_turn=before_turn,
         )
@@ -577,14 +642,34 @@ async def get_conversation_history(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Health check
-@router.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "provider": settings.llm_provider,
-        "database": "connected" if db_manager._engine else "disconnected",
-        "redis": "connected" if db_manager._redis_client else "disconnected",
-        "pinecone": "connected" if db_manager._pinecone_index else "disconnected",
-    }
+# User Profile Endpoints
+@router.get("/profile")
+async def get_user_profile(current_user: User = Depends(get_current_user)):
+    """Get user profile with auto-generated summary.
+    
+    Returns comprehensive user profile built from conversation memories.
+    """
+    try:
+        from app.services.profile_manager import profile_manager
+        profile = await profile_manager.get_or_create_profile(current_user.user_id)
+        return profile
+    except Exception as e:
+        logger.error(f"Failed to retrieve profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/profile/summary")
+async def get_profile_summary(current_user: User = Depends(get_current_user)):
+    """Get compact profile summary for LLM context.
+    
+    Returns condensed profile suitable for adding to LLM prompts.
+    """
+    try:
+        from app.services.profile_manager import profile_manager
+        summary = await profile_manager.get_profile_summary(current_user.user_id)
+        return summary
+    except Exception as e:
+        logger.error(f"Failed to retrieve profile summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+

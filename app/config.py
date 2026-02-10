@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     embedding_provider: Literal["openai", "sentence-transformers"] = "openai"
     embedding_model: str = "all-MiniLM-L6-v2"
 
+    # Authentication
+    jwt_secret_key: str = Field(default="your-secret-key-change-in-production-min-32-chars")
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 10080  # 7 days
+    refresh_token_expire_days: int = 30
+
     # Memory Settings
     memory_retrieval_top_k: int = 10
     memory_embedding_dimension: int = 384

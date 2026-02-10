@@ -158,19 +158,15 @@ class ConversationStorage:
             for row in rows:
                 turns.append(
                     ConversationTurn(
-                        turn_id=UUID(row[0]),
+                        turn_id=row[0],  # asyncpg returns UUID objects already
                         user_id=row[1],
                         turn_number=row[2],
                         user_message=row[3],
                         assistant_message=row[4] or "",
                         timestamp=row[5],
                         metadata=json.loads(row[6]) if row[6] else {},
-                        memories_retrieved=[
-                            UUID(m) for m in (row[7] or [])
-                        ],
-                        memories_created=[
-                            UUID(m) for m in (row[8] or [])
-                        ],
+                        memories_retrieved=row[7] or [],  # Already UUID array
+                        memories_created=row[8] or [],  # Already UUID array
                     )
                 )
 

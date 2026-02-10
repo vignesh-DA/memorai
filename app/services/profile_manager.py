@@ -7,24 +7,25 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from app.models.profile import UserProfile, ProfileSummary, ProfileUpdate
-from app.core.database import get_db_pool
-import asyncpg
+from app.database import db_manager
+from sqlalchemy import text
 
 
 class ProfileManager:
     """Manages user profiles with auto-update from memories"""
     
     def __init__(self):
-        self.pool = None
+        self.engine = None
     
     async def initialize(self):
-        """Initialize database pool"""
-        self.pool = await get_db_pool()
+        """Initialize database engine"""
+        self.engine = db_manager._engine
     
     async def create_profile_table(self):
         """Create user_profiles table if not exists"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
+        async with self.engine.begin() as conn:
+            # Create table
+            await conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id VARCHAR(255) PRIMARY KEY,
                     
@@ -74,30 +75,32 @@ class ProfileManager:
                     last_conversation TIMESTAMP,
                     total_conversations INTEGER DEFAULT 0,
                     profile_completeness FLOAT DEFAULT 0.0
-                );
-                
-                CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON user_profiles(user_id);
-            """)
+                )
+            """))
+            
+            # Create index separately
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON user_profiles(user_id)
+            """))
     
     async def get_or_create_profile(self, user_id: str) -> UserProfile:
         """Get existing profile or create new one"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM user_profiles WHERE user_id = $1",
-                user_id
+        async with self.engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT * FROM user_profiles WHERE user_id = :user_id"),
+                {"user_id": user_id}
             )
             
+            row = result.first()
             if row:
                 return self._row_to_profile(row)
             
             # Create new profile
-            await conn.execute(
-                """
-                INSERT INTO user_profiles (user_id)
-                VALUES ($1)
-                """,
-                user_id
-            )
+            async with self.engine.begin() as insert_conn:
+                await insert_conn.execute(
+                    text("INSERT INTO user_profiles (user_id) VALUES (:user_id)"),
+                    {"user_id": user_id}
+                )
             
             return UserProfile(user_id=user_id)
     
@@ -212,36 +215,30 @@ class ProfileManager:
         if not updates:
             return
         
-        # Build dynamic UPDATE query
+        # Build dynamic UPDATE query with named parameters
         set_clauses = []
-        values = []
-        param_num = 1
+        params = {"user_id": user_id, "updated_at": datetime.utcnow()}
         
         for field, value in updates.items():
+            param_name = f"p_{field}"
             if isinstance(value, (list, dict)):
-                set_clauses.append(f"{field} = ${param_num}::jsonb")
-                values.append(json.dumps(value))
+                set_clauses.append(f"{field} = :{param_name}::jsonb")
+                params[param_name] = json.dumps(value)
             else:
-                set_clauses.append(f"{field} = ${param_num}")
-                values.append(value)
-            param_num += 1
+                set_clauses.append(f"{field} = :{param_name}")
+                params[param_name] = value
         
         # Add updated_at
-        set_clauses.append(f"updated_at = ${param_num}")
-        values.append(datetime.utcnow())
-        param_num += 1
-        
-        # Add user_id for WHERE clause
-        values.append(user_id)
+        set_clauses.append("updated_at = :updated_at")
         
         query = f"""
             UPDATE user_profiles
             SET {', '.join(set_clauses)}
-            WHERE user_id = ${param_num}
+            WHERE user_id = :user_id
         """
         
-        async with self.pool.acquire() as conn:
-            await conn.execute(query, *values)
+        async with self.engine.begin() as conn:
+            await conn.execute(text(query), params)
     
     async def _update_completeness(self, user_id: str):
         """Calculate and update profile completeness score"""
@@ -280,11 +277,10 @@ class ProfileManager:
         
         completeness = (filled_fields / total_fields) * 100 if total_fields > 0 else 0
         
-        async with self.pool.acquire() as conn:
+        async with self.engine.begin() as conn:
             await conn.execute(
-                "UPDATE user_profiles SET profile_completeness = $1 WHERE user_id = $2",
-                completeness,
-                user_id
+                text("UPDATE user_profiles SET profile_completeness = :completeness WHERE user_id = :user_id"),
+                {"completeness": completeness, "user_id": user_id}
             )
     
     async def get_profile_summary(self, user_id: str) -> ProfileSummary:
@@ -292,41 +288,43 @@ class ProfileManager:
         profile = await self.get_or_create_profile(user_id)
         return ProfileSummary.from_profile(profile)
     
-    def _row_to_profile(self, row: asyncpg.Record) -> UserProfile:
+    def _row_to_profile(self, row) -> UserProfile:
         """Convert database row to UserProfile object"""
+        # Convert SQLAlchemy Row to dict for easier access
+        row_dict = row._asdict() if hasattr(row, '_asdict') else dict(row)
         return UserProfile(
-            user_id=row["user_id"],
-            name=row["name"],
-            age=row["age"],
-            gender=row["gender"],
-            language=row["language"],
-            location=row["location"],
-            education=row["education"],
-            profession=row["profession"],
-            workplace=row["workplace"],
-            experience_years=row["experience_years"],
-            skills=row["skills"] or [],
-            relationship_status=row["relationship_status"],
-            partner_name=row["partner_name"],
-            family=row["family"] or [],
-            interests=row["interests"] or [],
-            hobbies=row["hobbies"] or [],
-            goals=row["goals"] or [],
-            personality_traits=row["personality_traits"] or [],
-            writing_style=row["writing_style"],
-            prefers_short_responses=row["prefers_short_responses"],
-            uses_emojis=row["uses_emojis"],
-            tone_preference=row["tone_preference"],
-            likes=row["likes"] or {},
-            dislikes=row["dislikes"] or {},
-            timezone=row["timezone"],
-            active_hours=row["active_hours"] or [],
-            routines=row["routines"] or {},
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            last_conversation=row["last_conversation"],
-            total_conversations=row["total_conversations"],
-            profile_completeness=row["profile_completeness"]
+            user_id=row_dict["user_id"],
+            name=row_dict["name"],
+            age=row_dict["age"],
+            gender=row_dict["gender"],
+            language=row_dict["language"],
+            location=row_dict["location"],
+            education=row_dict["education"],
+            profession=row_dict["profession"],
+            workplace=row_dict["workplace"],
+            experience_years=row_dict["experience_years"],
+            skills=row_dict["skills"] or [],
+            relationship_status=row_dict["relationship_status"],
+            partner_name=row_dict["partner_name"],
+            family=row_dict["family"] or [],
+            interests=row_dict["interests"] or [],
+            hobbies=row_dict["hobbies"] or [],
+            goals=row_dict["goals"] or [],
+            personality_traits=row_dict["personality_traits"] or [],
+            writing_style=row_dict["writing_style"],
+            prefers_short_responses=row_dict["prefers_short_responses"],
+            uses_emojis=row_dict["uses_emojis"],
+            tone_preference=row_dict["tone_preference"],
+            likes=row_dict["likes"] or {},
+            dislikes=row_dict["dislikes"] or {},
+            timezone=row_dict["timezone"],
+            active_hours=row_dict["active_hours"] or [],
+            routines=row_dict["routines"] or {},
+            created_at=row_dict["created_at"],
+            updated_at=row_dict["updated_at"],
+            last_conversation=row_dict["last_conversation"],
+            total_conversations=row_dict["total_conversations"],
+            profile_completeness=row_dict["profile_completeness"]
         )
     
     # Helper methods for extraction

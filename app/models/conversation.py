@@ -24,7 +24,6 @@ class ConversationTurn(BaseModel):
 class ConversationRequest(BaseModel):
     """Request to process a conversation turn."""
 
-    user_id: str = Field(..., min_length=1, max_length=255)
     turn_number: int = Field(..., ge=0)
     message: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(default_factory=dict)

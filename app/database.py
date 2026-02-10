@@ -31,7 +31,83 @@ class DatabaseManager:
         await self._init_postgres()
         await self._init_redis()
         await self._init_pinecone()
+        await self._init_profile_tables()
         logger.info("All database connections initialized")
+    
+    async def _init_profile_tables(self) -> None:
+        """Initialize user profile tables."""
+        try:
+            from app.services.profile_manager import profile_manager
+            await profile_manager.initialize()
+            await profile_manager.create_profile_table()
+            
+            # Create memories table
+            async with self._engine.begin() as conn:
+                # Drop existing table to recreate with correct schema
+                await conn.execute(text("DROP TABLE IF EXISTS memories CASCADE"))
+                
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS memories (
+                        memory_id UUID PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        type VARCHAR(50) NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding vector(384),
+                        source_turn INTEGER NOT NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        last_accessed TIMESTAMP,
+                        access_count INTEGER DEFAULT 0,
+                        confidence FLOAT NOT NULL,
+                        importance_score FLOAT DEFAULT 0.5,
+                        importance_level VARCHAR(20) DEFAULT 'medium',
+                        decay_score FLOAT DEFAULT 1.0,
+                        tags JSONB DEFAULT '[]'::jsonb,
+                        entities JSONB DEFAULT '[]'::jsonb,
+                        context JSONB DEFAULT '{}'::jsonb
+                    )
+                """))
+                
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_memories_user_id 
+                    ON memories(user_id)
+                """))
+                
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_memories_created_at 
+                    ON memories(created_at DESC)
+                """))
+            
+            # Create conversation turns table
+            async with self._engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS conversation_turns (
+                        turn_id UUID PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        turn_number INTEGER NOT NULL,
+                        user_message TEXT NOT NULL,
+                        assistant_message TEXT NOT NULL,
+                        timestamp TIMESTAMP NOT NULL,
+                        metadata JSONB DEFAULT '{}',
+                        memories_retrieved TEXT[] DEFAULT '{}',
+                        memories_created TEXT[] DEFAULT '{}',
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+                
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_conversation_turns_user 
+                        ON conversation_turns(user_id, turn_number DESC)
+                """))
+                
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_conversation_turns_timestamp 
+                        ON conversation_turns(timestamp DESC)
+                """))
+            
+            logger.info("User profile tables initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize profile tables: {e}")
+            raise
 
     async def _init_postgres(self) -> None:
         """Initialize PostgreSQL connection with connection pooling."""

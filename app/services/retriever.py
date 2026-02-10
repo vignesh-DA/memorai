@@ -5,12 +5,13 @@ import logging
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+from uuid import UUID
 
 from redis import asyncio as aioredis
 
 from app.config import get_settings
 from app.database import db_manager
-from app.models.memory import Memory, MemorySearchQuery, MemorySearchResult, MemoryType
+from app.models.memory import Memory, MemorySearchQuery, MemorySearchResult, MemoryType, MemoryMetadata
 from app.utils.embeddings import EmbeddingGenerator
 from app.utils.metrics import metrics, track_latency
 
@@ -91,6 +92,10 @@ class MemoryRetriever:
                         # Calculate similarity score (already from vector search)
                         similarity_score = float(match.score)
 
+                        # Get importance score from metadata
+                        importance_score = float(metadata.get('importance_score', 0.7))
+                        importance_level = metadata.get('importance_level', 'medium')
+
                         # Calculate recency score
                         source_turn = int(metadata.get('source_turn', 0))
                         recency_score = self._calculate_recency_score(
@@ -102,18 +107,16 @@ class MemoryRetriever:
                         # In production, track actual access patterns
                         access_score = confidence
 
-                        # Calculate composite relevance score
+                        # Calculate composite relevance score with importance weighting
                         relevance_score = self._calculate_relevance_score(
                             similarity_score,
                             recency_score,
                             access_score,
                             confidence,
+                            importance_score,
                         )
 
                         # Create memory object from Pinecone metadata
-                        from uuid import UUID
-                        from app.models.memory import MemoryMetadata
-                        
                         created_at = datetime.fromisoformat(
                             metadata.get('created_at', datetime.utcnow().isoformat())
                         )
@@ -125,6 +128,8 @@ class MemoryRetriever:
                             access_count=0,
                             confidence=confidence,
                             decay_score=recency_score,
+                            importance_score=importance_score,
+                            importance_level=importance_level,
                         )
 
                         memory = Memory(
@@ -194,29 +199,33 @@ class MemoryRetriever:
         recency: float,
         access: float,
         confidence: float,
+        importance: float = 0.7,
     ) -> float:
-        """Calculate composite relevance score.
+        """Calculate composite relevance score with importance weighting.
         
         Weighted combination:
-        - 40% semantic similarity
-        - 30% recency
-        - 20% access frequency
-        - 10% confidence
+        - 35% semantic similarity
+        - 25% importance weight (NEW - critical memories prioritized)
+        - 20% recency
+        - 15% access frequency
+        - 5% confidence
         
         Args:
             similarity: Vector similarity score
             recency: Recency score
             access: Access frequency score
             confidence: Confidence score
+            importance: Memory importance score (0-1)
             
         Returns:
             Composite relevance score between 0 and 1
         """
         score = (
-            0.4 * similarity +
-            0.3 * recency +
-            0.2 * access +
-            0.1 * confidence
+            0.35 * similarity +
+            0.25 * importance +  # NEW: Important memories rank higher
+            0.20 * recency +
+            0.15 * access +
+            0.05 * confidence
         )
         return min(max(score, 0.0), 1.0)
 
@@ -255,7 +264,6 @@ class MemoryRetriever:
             for match in results.matches:
                 try:
                     metadata = match.metadata
-                    from uuid import UUID
 
                     memory = Memory(
                         memory_id=UUID(match.id),
@@ -356,7 +364,6 @@ class MemoryRetriever:
 
                 try:
                     metadata = match.metadata
-                    from uuid import UUID
 
                     similar_memory = Memory(
                         memory_id=UUID(match.id),

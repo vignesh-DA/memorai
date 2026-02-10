@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.auth_routes import router as auth_router
 from app.config import get_settings
 from app.database import db_manager
 
@@ -30,6 +31,12 @@ async def lifespan(app: FastAPI):
     try:
         await db_manager.initialize()
         logger.info("Database connections established")
+        
+        # Initialize authentication tables
+        from app.services.auth_service import AuthService
+        auth_service = AuthService(db_manager._engine)
+        await auth_service.initialize_tables()
+        logger.info("Authentication system initialized")
     except Exception as e:
         logger.error(f"Failed to initialize databases: {e}")
         raise
@@ -98,7 +105,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Include routers
-app.include_router(router)
+app.include_router(auth_router)  # Authentication routes
+app.include_router(router)  # Memory routes
 
 # Mount static files
 from pathlib import Path
@@ -115,6 +123,14 @@ async def root():
     return FileResponse(ui_path)
 
 
+# Auth page endpoint
+@app.get("/auth.html")
+async def serve_auth():
+    """Serve the authentication page."""
+    auth_path = frontend_path / "auth.html"
+    return FileResponse(auth_path)
+
+
 # API info endpoint
 @app.get("/api")
 async def api_info():
@@ -125,6 +141,19 @@ async def api_info():
         "status": "running",
         "docs": "/docs",
         "frontend": "/"
+    }
+
+
+# Health check endpoint
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "database": "connected" if db_manager._engine else "disconnected",
+        "redis": "connected" if db_manager._redis_client else "disconnected",
+        "service": "Long-Form Memory System",
+        "version": "1.0.0"
     }
 
 

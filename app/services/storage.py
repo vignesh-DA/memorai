@@ -109,10 +109,21 @@ class MemoryStorage:
             # Generate embedding
             embedding = await self.embedder.generate(memory_create.content)
 
+            # Calculate importance weight
+            from app.utils.memory_weight import MemoryWeightCalculator
+            importance_score, importance_level = MemoryWeightCalculator.calculate_initial_weight(
+                memory_type=memory_create.type.value,
+                content=memory_create.content,
+                confidence=memory_create.confidence,
+                context=memory_create.context
+            )
+
             # Create memory object
             metadata = MemoryMetadata(
                 source_turn=memory_create.source_turn,
                 confidence=memory_create.confidence,
+                importance_score=importance_score,
+                importance_level=importance_level.value,
                 tags=memory_create.tags,
                 entities=memory_create.entities,
                 context=memory_create.context,
@@ -133,10 +144,12 @@ class MemoryStorage:
             query = """
                 INSERT INTO memories (
                     memory_id, user_id, type, content, embedding,
-                    source_turn, created_at, confidence, tags, entities
+                    source_turn, created_at, confidence, importance_score, importance_level,
+                    tags, entities
                 ) VALUES (
                     :memory_id, :user_id, :type, :content, :embedding,
-                    :source_turn, :created_at, :confidence, :tags, :entities
+                    :source_turn, :created_at, :confidence, :importance_score, :importance_level,
+                    :tags, :entities
                 )
             """
             
@@ -152,6 +165,8 @@ class MemoryStorage:
                     "source_turn": metadata.source_turn,
                     "created_at": metadata.created_at,
                     "confidence": metadata.confidence,
+                    "importance_score": metadata.importance_score,
+                    "importance_level": metadata.importance_level,
                     "tags": json.dumps(metadata.tags),
                     "entities": json.dumps(metadata.entities),
                 },
@@ -169,6 +184,8 @@ class MemoryStorage:
                             "content": memory.content[:1000],  # Pinecone metadata limit
                             "source_turn": metadata.source_turn,
                             "confidence": metadata.confidence,
+                            "importance_score": metadata.importance_score,
+                            "importance_level": metadata.importance_level,
                             "created_at": metadata.created_at.isoformat(),
                         },
                     }
@@ -233,7 +250,7 @@ class MemoryStorage:
             )
 
             memory = Memory(
-                memory_id=UUID(row[0]),
+                memory_id=row[0],  # asyncpg returns UUID objects already
                 user_id=row[1],
                 type=MemoryType(row[2]),
                 content=row[3],
@@ -334,6 +351,88 @@ class MemoryStorage:
             logger.error(f"Failed to update memory {memory_id}: {e}")
             raise
 
+    async def update_memory_importance(
+        self,
+        memory_id: UUID,
+        new_importance: float,
+        importance_level: str
+    ) -> bool:
+        """Update memory importance score and level.
+        
+        Args:
+            memory_id: Memory UUID
+            new_importance: New importance score (0-1)
+            importance_level: New importance level (critical/high/medium/low)
+            
+        Returns:
+            True if updated
+        """
+        try:
+            query = text("""
+                UPDATE memories
+                SET importance_score = :importance_score,
+                    importance_level = :importance_level
+                WHERE memory_id = :memory_id
+            """)
+            
+            await self.session.execute(
+                query,
+                {
+                    "memory_id": str(memory_id),
+                    "importance_score": new_importance,
+                    "importance_level": importance_level
+                }
+            )
+            
+            # Invalidate cache
+            await self.redis.delete(self._cache_key(memory_id))
+            
+            logger.info(f"Updated importance for memory {memory_id}: {new_importance}")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Failed to update importance for {memory_id}: {e}")
+            return False
+    
+    async def update_memory_context(
+        self,
+        memory_id: UUID,
+        context: dict
+    ) -> bool:
+        """Update memory context metadata.
+        
+        Args:
+            memory_id: Memory UUID
+            context: New context dictionary
+            
+        Returns:
+            True if updated
+        """
+        try:
+            query = text("""
+                UPDATE memories
+                SET context = :context
+                WHERE memory_id = :memory_id
+            """)
+            
+            await self.session.execute(
+                query,
+                {
+                    "memory_id": str(memory_id),
+                    "context": json.dumps(context)
+                }
+            )
+            
+            # Invalidate cache
+            await self.redis.delete(self._cache_key(memory_id))
+            
+            logger.info(f"Updated context for memory {memory_id}")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Failed to update context for {memory_id}: {e}")
+            return False
+
     @track_time("delete_memory")
     async def delete_memory(self, memory_id: UUID) -> bool:
         """Delete a memory.
@@ -411,6 +510,10 @@ class MemoryStorage:
             for row in rows:
                 embedding = [float(x) for x in row[4].strip('[]').split(',')]
                 
+                # PostgreSQL JSONB columns are already deserialized by asyncpg
+                tags = row[11] if isinstance(row[11], list) else (json.loads(row[11]) if row[11] else [])
+                entities = row[12] if isinstance(row[12], list) else (json.loads(row[12]) if row[12] else [])
+                
                 metadata = MemoryMetadata(
                     source_turn=row[5],
                     created_at=row[6],
@@ -418,12 +521,12 @@ class MemoryStorage:
                     access_count=row[8] or 0,
                     confidence=row[9],
                     decay_score=row[10] or 1.0,
-                    tags=json.loads(row[11]) if row[11] else [],
-                    entities=json.loads(row[12]) if row[12] else [],
+                    tags=tags,
+                    entities=entities,
                 )
 
                 memory = Memory(
-                    memory_id=UUID(row[0]),
+                    memory_id=row[0],  # asyncpg returns UUID objects already
                     user_id=row[1],
                     type=MemoryType(row[2]),
                     content=row[3],
@@ -465,7 +568,7 @@ class MemoryStorage:
             
             result = await self.session.execute(
                 query,
-                {"user_id": user_id, "hot_threshold": settings.memory_cache_hot_threshold},
+                {"user_id": user_id, "hot_threshold": 10},  # Consider memories accessed 10+ times as "hot"
             )
             rows = result.fetchall()
 
