@@ -218,7 +218,20 @@ const elements = {
     newChatBtn: document.getElementById('newChatBtn'),
     toggleSearchBtn: document.getElementById('toggleSearchBtn'),
     closeSearchBtn: document.getElementById('closeSearchBtn'),
-    searchBtn: document.getElementById('searchBtn')
+    searchBtn: document.getElementById('searchBtn'),
+    // Image upload elements
+    imageBtn: document.getElementById('imageBtn'),
+    imageInput: document.getElementById('imageInput'),
+    imagePreviewContainer: document.getElementById('imagePreviewContainer'),
+    imagePreview: document.getElementById('imagePreview'),
+    imageFileName: document.getElementById('imageFileName'),
+    removeImageBtn: document.getElementById('removeImageBtn')
+};
+
+// Image upload state
+const imageState = {
+    selectedFile: null,
+    previewUrl: null
 };
 
 // Initialize App
@@ -663,6 +676,11 @@ function setupEventListeners() {
     elements.sendBtn.addEventListener('click', sendMessage);
     elements.messageInput.addEventListener('keydown', handleKeyPress);
     
+    // Image upload handlers
+    elements.imageBtn.addEventListener('click', () => elements.imageInput.click());
+    elements.imageInput.addEventListener('change', handleImageSelect);
+    elements.removeImageBtn.addEventListener('click', clearImageSelection);
+    
     // Search with real-time debouncing
     elements.toggleSearchBtn.addEventListener('click', toggleSearch);
     elements.closeSearchBtn.addEventListener('click', toggleSearch);
@@ -702,6 +720,75 @@ function handleSearchKeyPress(e) {
     }
 }
 
+// Image Upload Handlers
+function handleImageSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // Validate file type
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'];
+    if (!validTypes.includes(file.type)) {
+        showToast('Please select a PNG, JPEG, WebP, or GIF image', 'error');
+        return;
+    }
+    
+    // Validate file size (5MB max)
+    const maxSize = 5 * 1024 * 1024;
+    if (file.size > maxSize) {
+        showToast('Image must be less than 5MB', 'error');
+        return;
+    }
+    
+    // Store file and show preview
+    imageState.selectedFile = file;
+    
+    // Create preview URL
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        imageState.previewUrl = e.target.result;
+        elements.imagePreview.src = e.target.result;
+        elements.imageFileName.textContent = file.name;
+        elements.imagePreviewContainer.style.display = 'block';
+        
+        // Update placeholder
+        elements.messageInput.placeholder = 'Describe what you want to know about this image...';
+    };
+    reader.readAsDataURL(file);
+}
+
+function clearImageSelection() {
+    imageState.selectedFile = null;
+    imageState.previewUrl = null;
+    elements.imagePreview.src = '';
+    elements.imageFileName.textContent = '';
+    elements.imagePreviewContainer.style.display = 'none';
+    elements.imageInput.value = '';
+    elements.messageInput.placeholder = 'Type your message...';
+}
+
+async function analyzeImageWithVision(file, prompt) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('prompt', prompt || 'Analyze this image in detail.');
+    formData.append('save_to_memory', 'true');
+    
+    const token = getAuthToken();
+    const response = await fetch(`${API_BASE}/vision/analyze`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${token}`
+        },
+        body: formData
+    });
+    
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to analyze image');
+    }
+    
+    return await response.json();
+}
+
 // User ID Change Handler
 function handleUserIdChange() {
     state.userId = elements.userId.value.trim();
@@ -714,9 +801,11 @@ async function sendMessage() {
     if (state.isLoading || state.isSending) return;
 
     const message = elements.messageInput.value.trim();
+    const hasImage = imageState.selectedFile !== null;
     
-    if (!message) {
-        showToast('Please enter a message', 'error');
+    // If no message and no image, show error
+    if (!message && !hasImage) {
+        showToast('Please enter a message or select an image', 'error');
         return;
     }
 
@@ -733,74 +822,107 @@ async function sendMessage() {
     const emptyState = elements.chatMessages.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
-    // Add user message
-    addMessage('user', message, state.turnNumber);
-
-    // Show loading
-    showLoading();
-
     try {
-        // Build request body
-        const requestBody = {
-            turn_number: state.turnNumber,
-            message: message,
-            include_memories: true
-        };
-        
-        // Include conversation_id if we have one
-        if (state.currentConversationId) {
-            requestBody.conversation_id = state.currentConversationId;
-        }
-        
-        const response = await fetchWithRetry(`${API_BASE}/conversation`, {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify(requestBody)
-        });
-
-        hideLoading();
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            const errorMessage = errorData.detail || `HTTP error! status: ${response.status}`;
+        // Handle image upload with vision API
+        if (hasImage) {
+            const imageFile = imageState.selectedFile;
+            const imageName = imageFile.name;
             
-            // If unauthorized, handled by fetchWithRetry
-            if (response.status === 401) {
-                return;
+            // Add user message with image indicator
+            addMessage('user', `🖼️ ${imageName}\n${message || 'Analyze this image'}`, state.turnNumber);
+            
+            // Clear image selection
+            clearImageSelection();
+            
+            // Show loading
+            showLoading();
+            
+            // Analyze image with vision API
+            const visionResult = await analyzeImageWithVision(imageFile, message);
+            
+            hideLoading();
+            
+            // Add assistant response with vision analysis
+            addMessage('assistant', visionResult.analysis, state.turnNumber);
+            
+            // Update stats
+            state.turnNumber++;
+            state.messageCount++;
+            loadStats();
+            
+            // Show success
+            showToast('Image analyzed successfully!', 'success');
+            
+        } else {
+            // Normal text message - existing logic
+            // Add user message
+            addMessage('user', message, state.turnNumber);
+
+            // Show loading
+            showLoading();
+            
+            // Build request body
+            const requestBody = {
+                turn_number: state.turnNumber,
+                message: message,
+                include_memories: true
+            };
+            
+            // Include conversation_id if we have one
+            if (state.currentConversationId) {
+                requestBody.conversation_id = state.currentConversationId;
             }
             
-            throw new Error(errorMessage);
-        }
+            const response = await fetchWithRetry(`${API_BASE}/conversation`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(requestBody)
+            });
 
-        const data = await response.json();
-        
-        // Update conversation ID if this was a new conversation
-        if (!state.currentConversationId && data.conversation_id) {
-            state.currentConversationId = data.conversation_id;
-            // Invalidate cache and reload conversations
-            state.conversationCache.clear();
-            await loadConversations();
-        } else if (state.currentConversationId) {
-            // Invalidate cache for this conversation
-            state.conversationCache.delete(state.currentConversationId);
-        }
-        
-        // Increment turn number after successful response
-        state.turnNumber++;
-        
-        // Add assistant response
-        addMessage('assistant', data.response, state.turnNumber, {
-            memories_used: data.memories_used.length,
-            processing_time: data.processing_time_ms
-        });
+            hideLoading();
 
-        // Update stats
-        state.totalProcessingTime += data.processing_time_ms;
-        state.messageCount++;
-        updateAverageProcessingTime();
-        
-        await loadStats();
-        showToast('Message sent successfully', 'success');
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.detail || `HTTP error! status: ${response.status}`;
+                
+                // If unauthorized, handled by fetchWithRetry
+                if (response.status === 401) {
+                    return;
+                }
+                
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            
+            // Update conversation ID if this was a new conversation
+            if (!state.currentConversationId && data.conversation_id) {
+                state.currentConversationId = data.conversation_id;
+                // Invalidate cache and reload conversations
+                state.conversationCache.clear();
+                await loadConversations();
+            } else if (state.currentConversationId) {
+                // Invalidate cache for this conversation
+                state.conversationCache.delete(state.currentConversationId);
+            }
+            
+            // Increment turn number after successful response
+            state.turnNumber++;
+            
+            // Add assistant response
+            addMessage('assistant', data.response, state.turnNumber, {
+                memories_used: data.memories_used.length,
+                processing_time: data.processing_time_ms
+            });
+
+            // Update stats
+            state.totalProcessingTime += data.processing_time_ms;
+            state.messageCount++;
+            updateAverageProcessingTime();
+            
+            await loadStats();
+            showToast('Message sent successfully', 'success');
+        }
 
     } catch (error) {
         hideLoading();

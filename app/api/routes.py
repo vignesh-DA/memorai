@@ -1027,3 +1027,114 @@ async def export_conversation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# VISION MODEL ROUTES - Image Analysis with Groq Llama 3.2 Vision
+# ============================================================================
+
+from fastapi import UploadFile, File, Form
+from app.services.vision_service import vision_service
+
+
+@router.post("/vision/analyze", tags=["Vision"])
+async def analyze_image(
+    file: UploadFile = File(...),
+    prompt: str = Form("Describe this image in detail and extract any important information."),
+    save_to_memory: bool = Form(True),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Analyze an image using Groq Llama 3.2 Vision model.
+    
+    - **file**: Image file (PNG, JPEG, WEBP, GIF)
+    - **prompt**: Analysis prompt (default: detailed description)
+    - **save_to_memory**: Whether to save analysis as a memory (default: true)
+    
+    Returns analysis text and optionally stores as memory.
+    """
+    try:
+        logger.info(f"📷 Vision analysis request from {current_user.user_id}: {file.filename}")
+        
+        # Read file bytes
+        file_bytes = await file.read()
+        
+        # Validate image
+        is_valid, error_msg = vision_service.validate_image(file_bytes, file.filename)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Process image (resize, optimize, encode)
+        logger.info("🔄 Processing image...")
+        image_base64 = vision_service.process_image(file_bytes)
+        
+        # Analyze with vision model
+        logger.info("🤖 Analyzing with Groq Vision...")
+        result = await vision_service.analyze_image(
+            image_base64=image_base64,
+            prompt=prompt,
+            user_id=current_user.user_id
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Vision analysis failed: {result.get('error', 'Unknown error')}"
+            )
+        
+        analysis_text = result["analysis"]
+        
+        # Optionally save to memory
+        memory_id = None
+        if save_to_memory and analysis_text:
+            logger.info("💾 Saving analysis to memory...")
+            
+            # Get embedding generator
+            embedding_gen = await get_embedding_generator()
+            storage = MemoryStorage(
+                session=session,
+                redis_client=db_manager.redis,
+                embedding_generator=embedding_gen
+            )
+            
+            # Prepare content (max 5000 chars for MemoryCreate)
+            prefix = f"Image Analysis ({file.filename}): "
+            max_content_len = 5000 - len(prefix) - 20  # Reserve space for prefix and truncation marker
+            
+            if len(analysis_text) > max_content_len:
+                # Truncate but keep first part (usually contains key info)
+                truncated_analysis = analysis_text[:max_content_len] + "... [truncated]"
+                memory_content = prefix + truncated_analysis
+                logger.warning(f"Image analysis truncated from {len(analysis_text)} to {max_content_len} chars")
+            else:
+                memory_content = prefix + analysis_text
+            
+            # Create memory from analysis
+            memory = MemoryCreate(
+                user_id=current_user.user_id,
+                content=memory_content,
+                type=MemoryType.FACT,
+                source_turn=0,  # Standalone memory
+                tags=["vision", "image-analysis", file.filename],
+                confidence=0.95,
+                entities=[]
+            )
+            
+            created_memory = await storage.create_memory(memory)
+            memory_id = str(created_memory.memory_id)
+            logger.info(f"✅ Saved analysis as memory: {memory_id}")
+        
+        return {
+            "success": True,
+            "analysis": analysis_text,
+            "filename": file.filename,
+            "model": result["model"],
+            "prompt": prompt,
+            "memory_id": memory_id,
+            "saved_to_memory": save_to_memory and memory_id is not None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Vision analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")

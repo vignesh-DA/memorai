@@ -57,7 +57,7 @@ class HealthChecker:
     def __init__(self):
         self.start_time = time.time()
         self.cache: Optional[SystemHealth] = None
-        self.cache_ttl = 10  # Cache results for 10 seconds
+        self.cache_ttl = 5  # Cache results for 5 seconds (fast health checks)
         self.last_check = 0
     
     async def get_health(self, include_details: bool = False) -> SystemHealth:
@@ -227,32 +227,47 @@ class HealthChecker:
             )
     
     async def _check_embeddings(self) -> ComponentHealth:
-        """Check embedding model health."""
+        """Check embedding model health (lightweight check)."""
         try:
             # Check if embedding model is initialized
             if settings.embedding_provider == "sentence-transformers":
+                # Check if model function has been cached (already loaded)
                 from app.utils.embeddings import _get_sentence_transformer
                 
-                start = time.time()
-                model = _get_sentence_transformer(settings.embedding_model)
+                # Check if the lru_cache has any cached results
+                cache_info = _get_sentence_transformer.cache_info()
                 
-                # Quick test embedding
-                if model:
+                if cache_info.currsize > 0:
+                    # Model is cached - do a quick test
+                    model = _get_sentence_transformer(settings.embedding_model)
+                    
+                    start = time.time()
                     test_text = "health check"
                     _ = model.encode(test_text)
+                    latency = (time.time() - start) * 1000
                     
-                latency = (time.time() - start) * 1000
-                
-                return ComponentHealth(
-                    status=HealthStatus.HEALTHY,
-                    message="Embedding model operational",
-                    latency_ms=round(latency, 2),
-                    details={
-                        "provider": settings.embedding_provider,
-                        "model": settings.embedding_model,
-                        "dimension": model.get_sentence_embedding_dimension()
-                    }
-                )
+                    return ComponentHealth(
+                        status=HealthStatus.HEALTHY,
+                        message="Embedding model operational",
+                        latency_ms=round(latency, 2),
+                        details={
+                            "provider": settings.embedding_provider,
+                            "model": settings.embedding_model,
+                            "dimension": model.get_sentence_embedding_dimension(),
+                            "cached": True
+                        }
+                    )
+                else:
+                    # Model not loaded yet - this is OK, will load on first use
+                    return ComponentHealth(
+                        status=HealthStatus.DEGRADED,
+                        message="Embedding model not loaded yet (will initialize on first use)",
+                        details={
+                            "provider": settings.embedding_provider,
+                            "model": settings.embedding_model,
+                            "cached": False
+                        }
+                    )
             else:
                 # OpenAI embeddings - just verify config
                 return ComponentHealth(
@@ -355,21 +370,27 @@ class HealthChecker:
         # Count status types
         statuses = [check.status for check in checks.values()]
         
+        # Define critical vs optional components
+        critical_components = ["database"]  # Only database is truly critical
+        optional_components = ["redis", "embeddings", "disk", "memory"]  # Can be degraded
+        
         # If any critical component is unhealthy, system is unhealthy
-        critical_components = ["database"]  # Database is critical
         for comp in critical_components:
             if comp in checks and checks[comp].status == HealthStatus.UNHEALTHY:
                 return HealthStatus.UNHEALTHY
         
-        # If any component unhealthy = system degraded
-        if HealthStatus.UNHEALTHY in statuses:
-            return HealthStatus.DEGRADED
+        # If any non-optional component is unhealthy = system degraded
+        for comp_name, comp_health in checks.items():
+            if comp_name not in optional_components and comp_health.status == HealthStatus.UNHEALTHY:
+                return HealthStatus.DEGRADED
         
-        # If any component degraded = system degraded
-        if HealthStatus.DEGRADED in statuses:
-            return HealthStatus.DEGRADED
+        # If critical components degraded = system degraded
+        for comp in critical_components:
+            if comp in checks and checks[comp].status == HealthStatus.DEGRADED:
+                return HealthStatus.DEGRADED
         
-        # All healthy
+        # All critical components healthy = system healthy
+        # (even if optional components are degraded)
         return HealthStatus.HEALTHY
 
 

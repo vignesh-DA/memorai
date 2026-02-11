@@ -64,7 +64,18 @@
         </div>
 
         <div class="input-area">
+            <div class="image-preview-container" id="imagePreviewContainer" style="display: none;">
+                <div class="image-preview-wrapper">
+                    <img id="imagePreview" src="" alt="Preview">
+                    <button class="remove-image-btn" id="removeImageBtn">×</button>
+                </div>
+                <div class="image-info">
+                    <span id="imageFileName"></span>
+                </div>
+            </div>
             <div class="input-wrapper">
+                <input type="file" id="imageInput" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" style="display: none;">
+                <button class="image-btn" id="imageBtn" title="Upload image">📷</button>
                 <textarea 
                     class="message-input" 
                     id="messageInput" 

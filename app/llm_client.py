@@ -1,6 +1,7 @@
 """Unified LLM client supporting multiple providers."""
 
 import json
+import asyncio
 from typing import List, Literal, Optional
 
 from openai import OpenAI
@@ -114,6 +115,33 @@ class UnifiedLLMClient:
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
 
+    async def generate_completion_async(
+        self,
+        messages: List[dict],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+    ) -> str:
+        """
+        Async wrapper for chat completion (runs sync methods in thread pool).
+        Supports vision messages with image_url content type.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content'
+            model: Optional model override
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Generated text response
+        """
+        # Run sync method in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.chat_completion(messages, model, temperature, max_tokens)
+        )
+
     def extract_json(
         self,
         messages: List[dict],
@@ -175,3 +203,7 @@ class UnifiedLLMClient:
 
 # Global client instance
 llm_client = UnifiedLLMClient()
+
+def get_llm_client() -> UnifiedLLMClient:
+    """Get the global LLM client instance."""
+    return llm_client

@@ -50,7 +50,7 @@ class Memory(BaseModel):
     memory_id: UUID = Field(default_factory=uuid4)
     user_id: str = Field(..., min_length=1, max_length=255)
     type: MemoryType
-    content: str = Field(..., min_length=1, max_length=2000)
+    content: str = Field(..., min_length=1, max_length=5000)
     embedding: Optional[list[float]] = Field(None, description="Vector embedding of content")
     metadata: MemoryMetadata
 
@@ -92,7 +92,7 @@ class MemoryCreate(BaseModel):
 
     user_id: str = Field(..., min_length=1, max_length=255)
     type: MemoryType
-    content: str = Field(..., min_length=1, max_length=2000)
+    content: str = Field(..., min_length=1, max_length=5000)
     source_turn: int = Field(..., ge=0)
     confidence: float = Field(..., ge=0.0, le=1.0)
     tags: list[str] = Field(default_factory=list)
@@ -103,7 +103,7 @@ class MemoryCreate(BaseModel):
 class MemoryUpdate(BaseModel):
     """Schema for updating an existing memory."""
 
-    content: Optional[str] = Field(None, min_length=1, max_length=2000)
+    content: Optional[str] = Field(None, min_length=1, max_length=5000)
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     tags: Optional[list[str]] = None
     entities: Optional[list[str]] = None

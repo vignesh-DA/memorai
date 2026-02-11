@@ -96,8 +96,9 @@ async def lifespan(app: FastAPI):
         # Warm up embedding model (optional, improves first request latency)
         if settings.embedding_provider == "sentence-transformers":
             try:
-                from app.utils.embeddings import get_embedding_model
-                get_embedding_model()
+                from app.utils.embeddings import EmbeddingGenerator
+                # Create instance to trigger model loading
+                _ = EmbeddingGenerator(redis_client=db_manager.redis)
                 logger.info("✅ Embedding model warmed up")
             except Exception as e:
                 logger.warning(f"⚠️ Embedding model warmup failed: {e}")
@@ -252,7 +253,19 @@ async def add_process_time_header(request: Request, call_next):
             )
         except:
             pass
-        raise
+        
+        # Log the error
+        logger.error(f"Middleware caught error: {e}", exc_info=True)
+        
+        # Return proper error response instead of raising
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "internal_server_error",
+                "message": str(e),
+                "detail": "An error occurred while processing your request"
+            }
+        )
 
 
 # Global exception handler with Sentry integration

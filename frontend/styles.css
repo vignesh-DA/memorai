@@ -714,3 +714,76 @@ body {
         opacity: 0;
     }
 }
+/* Image Upload Styles */
+.image-preview-container {
+    padding: 12px 24px;
+    border-bottom: 1px solid #e5e5e5;
+    background: #f9fafb;
+}
+
+.image-preview-wrapper {
+    position: relative;
+    display: inline-block;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 2px solid #e5e5e5;
+    background: #fff;
+}
+
+.image-preview-wrapper img {
+    max-width: 200px;
+    max-height: 200px;
+    display: block;
+}
+
+.remove-image-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    border: none;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.remove-image-btn:hover {
+    background: rgba(0, 0, 0, 0.9);
+}
+
+.image-info {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #666;
+}
+
+.image-btn {
+    width: 42px;
+    height: 52px;
+    background: #f0f0f0;
+    border: 1px solid #d1d1d1;
+    border-radius: 12px;
+    font-size: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.image-btn:hover {
+    background: #e5e5e5;
+    transform: translateY(-1px);
+}
+
+.image-btn:active {
+    transform: translateY(0);
+}
