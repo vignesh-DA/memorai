@@ -41,11 +41,8 @@ class DatabaseManager:
             await profile_manager.initialize()
             await profile_manager.create_profile_table()
             
-            # Create memories table
+            # Create memories table (DON'T drop - preserves existing data)
             async with self._engine.begin() as conn:
-                # Drop existing table to recreate with correct schema
-                await conn.execute(text("DROP TABLE IF EXISTS memories CASCADE"))
-                
                 await conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS memories (
                         memory_id UUID PRIMARY KEY,
@@ -77,31 +74,72 @@ class DatabaseManager:
                     ON memories(created_at DESC)
                 """))
             
+            # Drop old tables to recreate with new schema
+            async with self._engine.begin() as conn:
+                await conn.execute(text("DROP TABLE IF EXISTS conversation_turns CASCADE"))
+                await conn.execute(text("DROP TABLE IF EXISTS conversations CASCADE"))
+            
+            # Create conversations table
+            async with self._engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        conversation_id UUID PRIMARY KEY,
+                        user_id VARCHAR(255) NOT NULL,
+                        title VARCHAR(500),
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        is_archived BOOLEAN DEFAULT FALSE,
+                        turn_count INTEGER DEFAULT 0,
+                        metadata JSONB DEFAULT '{}'::jsonb
+                    )
+                """))
+
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_conversations_user_id 
+                    ON conversations(user_id)
+                """))
+
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_conversations_updated_at 
+                    ON conversations(updated_at DESC)
+                """))
+
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_conversations_archived 
+                    ON conversations(is_archived)
+                """))
+            
             # Create conversation turns table
             async with self._engine.begin() as conn:
                 await conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS conversation_turns (
                         turn_id UUID PRIMARY KEY,
+                        conversation_id UUID NOT NULL,
                         user_id VARCHAR(255) NOT NULL,
                         turn_number INTEGER NOT NULL,
                         user_message TEXT NOT NULL,
-                        assistant_message TEXT NOT NULL,
-                        timestamp TIMESTAMP NOT NULL,
-                        metadata JSONB DEFAULT '{}',
-                        memories_retrieved TEXT[] DEFAULT '{}',
-                        memories_created TEXT[] DEFAULT '{}',
-                        created_at TIMESTAMP DEFAULT NOW()
+                        assistant_message TEXT,
+                        timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+                        metadata JSONB DEFAULT '{}'::jsonb,
+                        memories_retrieved UUID[],
+                        memories_created UUID[],
+                        FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
                     )
                 """))
-                
+
                 await conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_conversation_turns_user 
-                        ON conversation_turns(user_id, turn_number DESC)
+                    CREATE INDEX IF NOT EXISTS idx_turns_conversation_id 
+                    ON conversation_turns(conversation_id)
                 """))
-                
+
                 await conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_conversation_turns_timestamp 
-                        ON conversation_turns(timestamp DESC)
+                    CREATE INDEX IF NOT EXISTS idx_turns_user_id 
+                    ON conversation_turns(user_id)
+                """))
+
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_turns_number 
+                    ON conversation_turns(turn_number)
                 """))
             
             logger.info("User profile tables initialized")

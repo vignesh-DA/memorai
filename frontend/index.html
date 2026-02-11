@@ -16,18 +16,21 @@
 
         <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
 
-        <div class="settings-section">
-            <div class="stats-item">
-                <span>Total Turns</span>
-                <span class="stats-value" id="turnCount">0</span>
+        <!-- Conversation List -->
+        <div class="conversation-list" id="conversationList">
+            <div class="list-header">
+                <h3>Conversations</h3>
+                <input 
+                    type="text" 
+                    class="conversation-search-input" 
+                    id="conversationSearchInput" 
+                    placeholder="Search conversations..."
+                >
             </div>
-            <div class="stats-item">
-                <span>Memories Stored</span>
-                <span class="stats-value" id="memoryCount">0</span>
-            </div>
-            <div class="stats-item">
-                <span>Processing Time</span>
-                <span class="stats-value" id="avgProcessingTime">0ms</span>
+            <div class="conversations" id="conversations">
+                <div class="empty-state" style="padding: 20px; text-align: center;">
+                    <p style="font-size: 13px; color: #94a3b8;">No conversations yet</p>
+                </div>
             </div>
         </div>
 
@@ -102,6 +105,6 @@
     <!-- Toast Container -->
     <div id="toastContainer"></div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260211b"></script>
 </body>
 </html>

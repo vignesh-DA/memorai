@@ -150,7 +150,7 @@ class MemoryStats(BaseModel):
 
     user_id: str
     total_memories: int
-    memories_by_type: dict[MemoryType, int]
+    memories_by_type: dict[str, int]  # Changed from MemoryType to str for JSON serialization
     avg_confidence: float
     oldest_memory_turn: int
     newest_memory_turn: int

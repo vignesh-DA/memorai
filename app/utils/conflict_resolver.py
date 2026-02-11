@@ -129,7 +129,7 @@ Examples of conflicts:
 - "Likes pizza" vs "Loves pizza" = FALSE (same preference)
 """
             
-            response = await llm_client.extract_json([
+            response = llm_client.extract_json([
                 {"role": "system", "content": "You are a conflict detection system. Determine if statements contradict."},
                 {"role": "user", "content": prompt}
             ])

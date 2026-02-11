@@ -145,11 +145,11 @@ class MemoryStorage:
                 INSERT INTO memories (
                     memory_id, user_id, type, content, embedding,
                     source_turn, created_at, confidence, importance_score, importance_level,
-                    tags, entities
+                    tags, entities, last_used_turn
                 ) VALUES (
                     :memory_id, :user_id, :type, :content, :embedding,
                     :source_turn, :created_at, :confidence, :importance_score, :importance_level,
-                    :tags, :entities
+                    :tags, :entities, :last_used_turn
                 )
             """
             
@@ -169,6 +169,7 @@ class MemoryStorage:
                     "importance_level": metadata.importance_level,
                     "tags": json.dumps(metadata.tags),
                     "entities": json.dumps(metadata.entities),
+                    "last_used_turn": None,
                 },
             )
 
@@ -224,7 +225,7 @@ class MemoryStorage:
                 SELECT 
                     memory_id, user_id, type, content, embedding::text,
                     source_turn, created_at, last_accessed, access_count,
-                    confidence, decay_score, tags, entities
+                    confidence, decay_score, tags, entities, last_used_turn
                 FROM memories
                 WHERE memory_id = :memory_id
             """)
@@ -248,6 +249,7 @@ class MemoryStorage:
                 tags=json.loads(row[11]) if row[11] else [],
                 entities=json.loads(row[12]) if row[12] else [],
             )
+            # Note: last_used_turn is row[13] but not in MemoryMetadata model
 
             memory = Memory(
                 memory_id=row[0],  # asyncpg returns UUID objects already
@@ -488,7 +490,7 @@ class MemoryStorage:
                 SELECT 
                     memory_id, user_id, type, content, embedding::text,
                     source_turn, created_at, last_accessed, access_count,
-                    confidence, decay_score, tags, entities
+                    confidence, decay_score, tags, entities, last_used_turn
                 FROM memories
                 WHERE user_id = :user_id
             """
@@ -556,11 +558,11 @@ class MemoryStorage:
                 SELECT 
                     type,
                     COUNT(*) as count,
-                    AVG(confidence) as avg_confidence,
+                    COALESCE(AVG(confidence), 0) as avg_confidence,
                     MIN(source_turn) as oldest_turn,
                     MAX(source_turn) as newest_turn,
-                    SUM(access_count) as total_accesses,
-                    SUM(CASE WHEN access_count >= :hot_threshold THEN 1 ELSE 0 END) as hot_count
+                    COALESCE(SUM(access_count), 0) as total_accesses,
+                    COALESCE(SUM(CASE WHEN access_count >= :hot_threshold THEN 1 ELSE 0 END), 0) as hot_count
                 FROM memories
                 WHERE user_id = :user_id
                 GROUP BY type
@@ -574,36 +576,40 @@ class MemoryStorage:
 
             total_memories = 0
             memories_by_type = {}
-            total_confidence = 0
+            total_confidence = 0.0
             oldest_turn = float('inf')
             newest_turn = 0
             total_accesses = 0
             hot_memories = 0
 
             for row in rows:
-                mem_type = MemoryType(row[0] )
+                mem_type = MemoryType(row[0])
                 count = row[1]
-                memories_by_type[mem_type] = count
+                # Store directly as string value, not enum
+                memories_by_type[mem_type.value] = count  # mem_type.value gives "FACT", "PREFERENCE", etc
                 total_memories += count
-                total_confidence += row[2] * count
+                total_confidence += (row[2] or 0.0) * count
                 oldest_turn = min(oldest_turn, row[3] or oldest_turn)
                 newest_turn = max(newest_turn, row[4] or newest_turn)
                 total_accesses += row[5] or 0
                 hot_memories += row[6] or 0
 
-            avg_confidence = total_confidence / total_memories if total_memories > 0 else 0
+            avg_confidence = total_confidence / total_memories if total_memories > 0 else 0.0
 
-            return MemoryStats(
+            stats = MemoryStats(
                 user_id=user_id,
                 total_memories=total_memories,
-                memories_by_type=memories_by_type,
-                avg_confidence=avg_confidence,
-                oldest_memory_turn=oldest_turn if oldest_turn != float('inf') else 0,
-                newest_memory_turn=newest_turn,
-                total_access_count=total_accesses,
-                hot_memories=hot_memories,
+                memories_by_type=memories_by_type,  # Already strings now
+                avg_confidence=float(avg_confidence),
+                oldest_memory_turn=int(oldest_turn if oldest_turn != float('inf') else 0),
+                newest_memory_turn=int(newest_turn),
+                total_access_count=int(total_accesses),
+                hot_memories=int(hot_memories),
             )
+            
+            logger.info(f"📊 Generated stats for {user_id}: total={total_memories}, types={list(memories_by_type.keys())}")
+            return stats
 
         except Exception as e:
-            logger.error(f"Failed to get user stats: {e}")
+            logger.error(f"Failed to get user stats: {e}", exc_info=True)
             raise

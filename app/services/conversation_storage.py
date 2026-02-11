@@ -27,6 +27,7 @@ class ConversationStorage:
 
     async def store_turn(
         self,
+        conversation_id: UUID,
         user_id: str,
         turn_number: int,
         user_message: str,
@@ -38,6 +39,7 @@ class ConversationStorage:
         """Store a complete conversation turn.
         
         Args:
+            conversation_id: Conversation identifier
             user_id: User identifier
             turn_number: Turn number in conversation
             user_message: User's message
@@ -63,12 +65,12 @@ class ConversationStorage:
 
             query = text("""
                 INSERT INTO conversation_turns (
-                    turn_id, user_id, turn_number,
+                    turn_id, conversation_id, user_id, turn_number,
                     user_message, assistant_message,
                     timestamp, metadata,
                     memories_retrieved, memories_created
                 ) VALUES (
-                    :turn_id, :user_id, :turn_number,
+                    :turn_id, :conversation_id, :user_id, :turn_number,
                     :user_message, :assistant_message,
                     :timestamp, :metadata,
                     :memories_retrieved, :memories_created
@@ -79,6 +81,7 @@ class ConversationStorage:
                 query,
                 {
                     "turn_id": str(turn_id),
+                    "conversation_id": str(conversation_id),
                     "user_id": user_id,
                     "turn_number": turn_number,
                     "user_message": user_message,
@@ -93,11 +96,12 @@ class ConversationStorage:
             await self.session.commit()
 
             logger.info(
-                f"Stored conversation turn {turn_number} for user {user_id}"
+                f"Stored conversation turn {turn_number} for conversation {conversation_id}"
             )
 
             return ConversationTurn(
                 turn_id=turn_id,
+                conversation_id=conversation_id,
                 user_id=user_id,
                 turn_number=turn_number,
                 user_message=user_message,

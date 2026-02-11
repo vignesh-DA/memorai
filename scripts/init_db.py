@@ -67,10 +67,40 @@ async def create_schema():
             ON memories(confidence)
         """))
 
+        # Create conversations table
+        await session.execute(text("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                conversation_id UUID PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                title VARCHAR(500),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                is_archived BOOLEAN DEFAULT FALSE,
+                turn_count INTEGER DEFAULT 0,
+                metadata JSONB DEFAULT '{}'::jsonb
+            )
+        """))
+
+        await session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_user_id 
+            ON conversations(user_id)
+        """))
+
+        await session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_updated_at 
+            ON conversations(updated_at DESC)
+        """))
+
+        await session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_archived 
+            ON conversations(is_archived)
+        """))
+
         # Create conversation_turns table
         await session.execute(text("""
             CREATE TABLE IF NOT EXISTS conversation_turns (
                 turn_id UUID PRIMARY KEY,
+                conversation_id UUID NOT NULL,
                 user_id VARCHAR(255) NOT NULL,
                 turn_number INTEGER NOT NULL,
                 user_message TEXT NOT NULL,
@@ -78,8 +108,14 @@ async def create_schema():
                 timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
                 metadata JSONB DEFAULT '{}'::jsonb,
                 memories_retrieved UUID[],
-                memories_created UUID[]
+                memories_created UUID[],
+                FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
             )
+        """))
+
+        await session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_turns_conversation_id 
+            ON conversation_turns(conversation_id)
         """))
 
         await session.execute(text("""
@@ -104,6 +140,7 @@ async def drop_schema():
 
     async with db_manager.get_session() as session:
         await session.execute(text("DROP TABLE IF EXISTS conversation_turns CASCADE"))
+        await session.execute(text("DROP TABLE IF EXISTS conversations CASCADE"))
         await session.execute(text("DROP TABLE IF EXISTS memories CASCADE"))
         await session.commit()
 

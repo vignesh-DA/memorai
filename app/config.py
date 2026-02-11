@@ -86,6 +86,27 @@ class Settings(BaseSettings):
     # Monitoring
     prometheus_port: int = 9090
     enable_metrics: bool = True
+    
+    # Sentry Error Tracking
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.1
+    sentry_profiles_sample_rate: float = 0.1
+    
+    # Rate Limiting
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 100  # Per user
+    rate_limit_burst: int = 20  # Burst allowance
+    rate_limit_global_per_minute: int = 1000  # Global limit
+    
+    # CORS Security
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:8000"])
+    cors_allow_credentials: bool = True
+    
+    # Security Headers
+    security_headers_enabled: bool = True
+    
+    # Graceful Shutdown
+    shutdown_timeout: int = 30  # seconds
 
     @field_validator("memory_confidence_threshold")
     @classmethod
@@ -93,6 +114,14 @@ class Settings(BaseSettings):
         """Ensure confidence threshold is between 0 and 1."""
         if not 0 <= v <= 1:
             raise ValueError("Confidence threshold must be between 0 and 1")
+        return v
+    
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS origins from string or list."""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
         return v
 
     @property
