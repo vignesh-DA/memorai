@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # LLM Provider Selection
     llm_provider: Literal["openai", "anthropic", "groq"] = "groq"
-    embedding_provider: Literal["openai", "sentence-transformers"] = "openai"
+    embedding_provider: Literal["openai", "sentence-transformers"] = "sentence-transformers"
     embedding_model: str = "all-MiniLM-L6-v2"
 
     # Authentication

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.config import get_settings
-from app.llm_client import llm_client
+from app.llm_client import get_llm_client
 from app.models.memory import MemoryCreate, MemoryType
 from app.utils.metrics import metrics
 from app.utils.temporal import parse_temporal_reference
@@ -61,6 +61,7 @@ class MemoryExtractor:
         turn_number: int,
         user_message: str,
         assistant_message: str,
+        existing_memories: list = None,  # NEW: For confidence calibration
     ) -> list[MemoryCreate]:
         """Extract memories from a conversation turn.
         
@@ -69,6 +70,7 @@ class MemoryExtractor:
             turn_number: Turn number in conversation
             user_message: User's message
             assistant_message: Assistant's response
+            existing_memories: Existing memories for semantic stability check
             
         Returns:
             List of memory creation objects
@@ -93,7 +95,7 @@ class MemoryExtractor:
             # Call LLM in thread pool to avoid blocking
             logger.info(f"🤖 Calling LLM for memory extraction (turn {turn_number})...")
             response_data = await asyncio.to_thread(
-                llm_client.extract_json,
+                get_llm_client().extract_json,
                 messages=messages
             )
             logger.info(f"📝 LLM response: {response_data}")
@@ -127,10 +129,52 @@ class MemoryExtractor:
                     # Normalize type to lowercase (LLM sometimes returns uppercase)
                     raw_type = mem_data.get('type', 'fact').lower()
                     memory_type = MemoryType(raw_type)
-                    confidence = float(mem_data.get('confidence', 0.7))
+                    llm_confidence = float(mem_data.get('confidence', 0.7))
+                    
+                    # 🔥 PRODUCTION FEATURE: Calibrated Confidence
+                    # Formula: confidence_final = 0.6 * llm_confidence + 0.4 * semantic_stability
+                    # 🚀 ELITE: Using embedding similarity instead of lexical SequenceMatcher
+                    semantic_stability = 0.5  # Default mid-range
+                    
+                    if existing_memories and len(existing_memories) > 0:
+                        # Calculate TRUE semantic similarity using embeddings
+                        # This captures semantic equivalence, not just character overlap
+                        # Example: "prefers morning calls" vs "likes calls in the morning" = HIGH similarity
+                        from app.utils.embeddings import EmbeddingGenerator
+                        import numpy as np
+                        
+                        # Generate embedding for new memory content
+                        embedder = EmbeddingGenerator()
+                        new_embedding = embedder.generate_embedding(mem_data['content'])
+                        
+                        max_similarity = 0.0
+                        
+                        # Compare against last 20 memories using cosine similarity
+                        for existing_mem in existing_memories[:20]:
+                            if existing_mem.embedding:
+                                # Cosine similarity in vector space
+                                similarity = np.dot(new_embedding, existing_mem.embedding) / (
+                                    np.linalg.norm(new_embedding) * np.linalg.norm(existing_mem.embedding)
+                                )
+                                
+                                if similarity > max_similarity:
+                                    max_similarity = similarity
+                        
+                        # Scale similarity (typically 0.3-1.0) to stability score
+                        semantic_stability = min(max(max_similarity, 0.0), 1.0)
+                    
+                    # Final calibrated confidence (prevents LLM overconfidence)
+                    confidence = (0.6 * llm_confidence) + (0.4 * semantic_stability)
+                    confidence = min(max(confidence, 0.0), 1.0)  # Clamp 0-1
+                    
+                    logger.debug(
+                        f"Confidence calibration: LLM={llm_confidence:.2f}, "
+                        f"Semantic={semantic_stability:.2f}, Final={confidence:.2f}"
+                    )
                     
                     # Filter out low confidence memories
                     if confidence < settings.memory_confidence_threshold:
+                        logger.debug(f"Skipping low confidence memory: {confidence:.2f}")
                         continue
 
                     # Parse temporal references and enhance content

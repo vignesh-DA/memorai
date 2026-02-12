@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from app.llm_client import llm_client
+from app.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ Return ONLY the title, no quotes, no explanations."""
                 }
             ]
             
-            title = llm_client.chat_completion(
+            title = get_llm_client().chat_completion(
                 messages=messages,
                 temperature=0.3,
                 max_tokens=20,

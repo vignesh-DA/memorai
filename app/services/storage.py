@@ -188,6 +188,8 @@ class MemoryStorage:
                             "importance_score": metadata.importance_score,
                             "importance_level": metadata.importance_level,
                             "created_at": metadata.created_at.isoformat(),
+                            "access_count": metadata.access_count,
+                            "is_conflicted": False,  # New memories not conflicted
                         },
                     }
                 ]
@@ -337,6 +339,11 @@ class MemoryStorage:
                                 "content": memory.content[:1000],
                                 "source_turn": memory.metadata.source_turn,
                                 "confidence": memory.metadata.confidence,
+                                "importance_score": memory.metadata.importance_score,
+                                "importance_level": memory.metadata.importance_level,
+                                "created_at": memory.metadata.created_at.isoformat(),
+                                "access_count": memory.metadata.access_count,
+                                "is_conflicted": False,  # Could be updated by conflict resolver
                             },
                         }
                     ]

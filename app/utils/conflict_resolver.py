@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 from uuid import UUID
 from app.models.memory import Memory, MemoryType
-from app.llm_client import llm_client
+from app.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ Examples of conflicts:
 - "Likes pizza" vs "Loves pizza" = FALSE (same preference)
 """
             
-            response = llm_client.extract_json([
+            response = get_llm_client().extract_json([
                 {"role": "system", "content": "You are a conflict detection system. Determine if statements contradict."},
                 {"role": "user", "content": prompt}
             ])

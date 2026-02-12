@@ -13,7 +13,8 @@ from app.api.dependencies import get_current_user
 from app.config import get_settings
 from app.database import db_manager, get_db_session
 from app.models.auth import User
-from app.llm_client import llm_client
+from app.llm_client import get_llm_client
+from app.prompts import get_system_prompt  # NEW: Production-grade prompts
 from app.models.conversation import ConversationRequest, ConversationResponse
 from app.models.memory import (
     Memory,
@@ -142,6 +143,57 @@ async def _generate_conversation_title(
         logger.error(f"Failed to generate conversation title: {e}")
 
 
+# Helper function to check duplicate content
+async def _check_duplicate_content(
+    storage,
+    user_id: str,
+    content: str,
+    similarity_threshold: float = 0.95
+) -> bool:
+    """Check if similar content already exists for user.
+    
+    Args:
+        storage: Memory storage instance
+        user_id: User ID
+        content: Content to check
+        similarity_threshold: Cosine similarity threshold (0.95 = 95% similar)
+        
+    Returns:
+        True if duplicate exists
+    """
+    try:
+        # Get recent memories for user (last 50)
+        recent_memories = await storage.get_user_memories(user_id=user_id, limit=50)
+        
+        # Generate embedding for new content
+        from app.utils.embeddings import EmbeddingGenerator
+        import numpy as np
+        
+        embedder = EmbeddingGenerator(redis_client=storage.redis)  # ✅ FIX: storage.redis not redis_client
+        new_embedding = await embedder.generate(content)  # ✅ FIX: async method is generate() not generate_embedding()
+        
+        # Check similarity against recent memories
+        for existing in recent_memories:
+            if existing.embedding:
+                # Cosine similarity
+                similarity = np.dot(new_embedding, existing.embedding) / (
+                    np.linalg.norm(new_embedding) * np.linalg.norm(existing.embedding)
+                )
+                
+                if similarity >= similarity_threshold:
+                    logger.info(
+                        f"Duplicate detected: '{content[:50]}...' matches "
+                        f"'{existing.content[:50]}...' (similarity: {similarity:.2f})"
+                    )
+                    return True
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Duplicate check failed: {e}")
+        return False  # If check fails, allow creation (safe default)
+
+
 # Helper function for background memory extraction
 async def _extract_and_store_memories_independent(
     user_id: str,
@@ -180,8 +232,42 @@ async def _extract_and_store_memories_independent(
             # Store memories, update profile, and check conflicts
             from app.services.profile_manager import profile_manager
             from app.utils.conflict_resolver import MemoryConflictResolver
+            from app.services.canonicalizer import CanonicalMemoryResolver
+            
+            # 🚀 ELITE: Canonical preference resolver (prevents memory duplication)
+            canonicalizer = CanonicalMemoryResolver(session)
             
             for memory in memories:
+                # 🚀 ELITE: Check if this should update existing canonical memory
+                is_canonical_update, existing_id = await canonicalizer.resolve_preference(
+                    user_id=user_id,
+                    new_content=memory.content,
+                    memory_type=memory.type,
+                    confidence=memory.confidence,
+                    turn_number=turn_number,
+                )
+                
+                if is_canonical_update:
+                    # Memory was updated in place - skip creation
+                    logger.info(
+                        f"🔄 Canonical update: {memory.content[:50]}... "
+                        f"(updated memory {existing_id})"
+                    )
+                    continue  # Don't create duplicate
+                
+                # ✅ FIX #3: Content-based deduplication check (prevents "hamidafreen84" x100)
+                is_duplicate = await _check_duplicate_content(
+                    storage=storage,
+                    user_id=user_id,
+                    content=memory.content,
+                    similarity_threshold=0.95  # 95% similarity = duplicate
+                )
+                
+                if is_duplicate:
+                    logger.info(f"⏭️ Skipping duplicate memory: {memory.content[:50]}...")
+                    continue  # Don't create duplicate
+                
+                # Not canonical or duplicate - create new memory
                 stored_memory = await storage.create_memory(memory)
                 
                 # Auto-update user profile from memory
@@ -196,17 +282,24 @@ async def _extract_and_store_memories_independent(
                 except Exception as e:
                     logger.warning(f"Profile update failed for memory: {e}")
                 
+                # ✅ FIX #4: Disable expensive conflict resolution for demo (saves 5+ LLM calls per memory)
+                # Each conflict check (_are_conflicting) makes 1 LLM call, checked 5 times per memory
+                # This was causing 20+ Groq calls per turn extraction
+                # Re-enable for production: Uncomment below
+                
                 # Check for conflicts with existing memories
-                try:
-                    resolution = await MemoryConflictResolver.detect_and_resolve(
-                        new_memory=stored_memory,
-                        user_memories=existing_memories,
-                        storage=storage
-                    )
-                    if resolution:
-                        logger.info(f"Conflict resolved using strategy: {resolution}")
-                except Exception as e:
-                    logger.warning(f"Conflict resolution failed: {e}")
+                # try:
+                #     resolution = await MemoryConflictResolver.detect_and_resolve(
+                #         new_memory=stored_memory,
+                #         user_memories=existing_memories,
+                #         storage=storage
+                #     )
+                #     if resolution:
+                #         logger.info(f"Conflict resolved using strategy: {resolution}")
+                # except Exception as e:
+                #     logger.warning(f"Conflict resolution failed: {e}")
+                
+                logger.debug(f"Conflict resolution disabled for performance (demo mode)")
 
             
             await session.commit()
@@ -386,6 +479,18 @@ async def process_conversation(
             "schedule", "meeting", "appointment", "calendar", "tomorrow", "today"
         ])
         
+        # Check if user wants EVERYTHING
+        is_comprehensive = any(phrase in query_text for phrase in [
+            "each and every", "everything", "all details", "comprehensive",
+            "full details", "complete information", "tell me everything"
+        ])
+        
+        # 🔥 NEW: Detect knowledge/summary requests - should use general knowledge
+        is_knowledge_query = any(phrase in query_text for phrase in [
+            "summarize", "summarise", "summary", "tell me about", "what is",
+            "explain", "describe", "book"
+        ])
+        
         # Check if this is a greeting and user is returning (has existing memories)
         is_greeting = any(phrase in query_text for phrase in [
             "hi", "hello", "hey", "greetings", "good morning", "good afternoon",
@@ -405,119 +510,79 @@ async def process_conversation(
                         logger.info(f"🎉 Returning user detected: {user_name}")
                         break
         
-        if is_schedule_query and search_results:
-            # Schedule-specific prompt - only show schedule info
-            system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
-
-## CURRENT CONTEXT
-- Turn Number: {request.turn_number}
-- User ID: {current_user.user_id}
-- Query Type: SCHEDULE/MEETING REQUEST
-- Memories Retrieved: {len(search_results)} schedule-related memories
-
-## INSTRUCTIONS FOR SCHEDULE QUERIES
-1. The user is asking about their SCHEDULE/MEETINGS only
-2. Show ONLY schedule-related information (meetings, appointments, commitments)
-3. Include the DATE and TIME for each item
-4. Do NOT mention unrelated info like relationships, skills, or other facts
-5. Format: "You have [event] on [date] at [time]"
-6. If no schedule found, say "I don't have any scheduled meetings or appointments"""
-        else:
-            # Check if user wants EVERYTHING
-            query_text = request.message.lower()
-            is_everything = any(phrase in query_text for phrase in [
-                "each and every", "everything", "all details", "comprehensive",
-                "full details", "complete information", "tell me everything"
-            ])
-            
-            # General prompt
-            if is_everything:
-                system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
-
-## CURRENT CONTEXT
-- Turn Number: {request.turn_number}
-- User ID: {current_user.user_id}
-- Memories Retrieved: {len(search_results) if request.include_memories else 0}
-
-## 🚨 COMPREHENSIVE INFORMATION REQUEST 🚨
-The user asked for "EACH AND EVERY THING" or "EVERYTHING" - this means:
-
-1. **LIST EVERY SINGLE MEMORY PROVIDED BELOW**
-2. **DO NOT SUMMARIZE** - show full details from each memory
-3. **Organize by categories:**
-   - 👤 Personal Information (name, age, location)
-   - 💼 Professional Details (job, experience, skills)
-   - 👥 Relationships (fiancé, family, friends)
-   - 🍽️ Preferences (food, hobbies, interests)
-   - 📅 Commitments (meetings, appointments, schedules)
-   - 💭 Other Facts
-
-4. **For each category, list ALL relevant details** - don't skip anything
-5. **Include dates/times for schedules**
-6. **Be thorough and complete** - the user wants EVERYTHING
-
-⚠️ FAILURE TO LIST ALL MEMORIES WILL DISAPPOINT THE USER ⚠️"""
-            else:
-                # Add personalized greeting instruction if returning user
-                greeting_instruction = ""
-                if is_greeting and user_name:
-                    greeting_instruction = f"""\n\n## 🎉 RETURNING USER GREETING
-This is a RETURNING USER starting a new conversation!
-- User's name: {user_name}
-- They have {len(search_results)} existing memories
-
-**GREETING STYLE (like Leo Das example):**
-- Use format: "{user_name} returns!" or "Welcome back, {user_name}!"
-- Be warm and enthusiastic with emoji ✨
-- Keep it SHORT (1-2 sentences max)
-- Briefly mention 1 interesting fact you remember
-- Ask "How can I help you today?" to prompt conversation
-
-❌ DO NOT MENTION: user IDs, email addresses, technical details
-✅ DO MENTION: Their name, something personal, warm welcome\n"""
-                elif is_greeting and search_results:
-                    greeting_instruction = f"""\n\n## 👋 RETURNING USER (Name Unknown)
-This is a returning user with {len(search_results)} existing memories.
-- Greet them warmly: "Welcome back!"
-- Mention you remember them
-- Keep it brief and friendly
-- Ask how you can help\n"""
-                
-                system_prompt = f"""You are an advanced AI assistant with LONG-TERM MEMORY capabilities.
-
-## CURRENT CONTEXT
-- Turn Number: {request.turn_number}
-- User ID: {current_user.user_id}
-- Memories Retrieved: {len(search_results) if request.include_memories else 0}{greeting_instruction}
-
-## CRITICAL INSTRUCTIONS
-1. Focus on what the user is ACTUALLY asking about
-2. Use memories that are RELEVANT to their specific question
-3. For broad questions ("what do you know about me"), include all details
-4. For specific questions, focus only on that topic
-5. Be concise unless asked for comprehensive information"""
-
+        # 🔥 PRODUCTION FEATURE: Memory Silence Detection
+        # If max relevance score < 0.30, don't inject long-term memory (lowered for demo/testing)
+        max_relevance = max([r.relevance_score for r in search_results], default=0.0)
+        # ✅ FIX #3: Protect knowledge queries from silence mode
+        silence_mode = (
+            max_relevance < 0.30
+            and not is_comprehensive
+            and not is_knowledge_query
+        )
+        
+        if silence_mode:
+            logger.info(f"🤫 Memory silence mode activated (max_relevance={max_relevance:.3f})")
+            memory_context = ""  # No long-term memory injection
+            search_results = []  # Clear results
+            # NOTE: Short-term context should still be preserved via conversation history
+        
+        # Generate system prompt using production template
+        # 🔥 ARCHITECTURE: System = Rules + Memory, User = Message (proper role separation)
+        system_prompt = get_system_prompt(
+            turn_number=request.turn_number,
+            user_id=current_user.user_id,
+            memory_count=len(search_results),
+            memory_context=memory_context,
+            silence_mode=silence_mode,
+            is_greeting=is_greeting,
+            is_schedule_query=is_schedule_query,
+            is_comprehensive=is_comprehensive,
+            is_knowledge_query=is_knowledge_query,  # 🔥 NEW: Knowledge query flag
+            user_name=user_name,
+        )
+        
+        # Build messages array for LLM
+        # PRODUCTION STRUCTURE:
+        # 1. System message = Architecture rules + Memory context
+        # 2. Conversation history = Short-term context (last 3-5 turns)
+        # 3. User message = User's actual message (separate role)
         messages = [
             {"role": "system", "content": system_prompt}
         ]
-
-        if memory_context:
-            messages.append({
-                "role": "system",
-                "content": f"\n{memory_context}\n"
-            })
-
-        messages.append({
-            "role": "user",
-            "content": f"USER'S MESSAGE (Turn {request.turn_number}):\n{request.message}"
-        })
+        
+        # ✅ FIXED: Add conversation history for short-term context
+        # Get recent conversation turns (exclude current turn)
+        try:
+            recent_turns = await conversation_storage.get_recent_turns(
+                user_id=current_user.user_id,  # ✅ FIX: Pass user_id to eliminate "user None" logs
+                conversation_id=conversation_id, 
+                limit=5,
+                before_turn=request.turn_number  # Exclude current turn being processed
+            )
+            
+            # ✅ FIX #4: Ensure chronological order
+            recent_turns = sorted(recent_turns, key=lambda x: x.turn_number)
+            
+            # Convert turns to message format for LLM context
+            for turn in recent_turns:
+                if turn.user_message:
+                    messages.append({"role": "user", "content": turn.user_message})
+                if turn.assistant_message:
+                    messages.append({"role": "assistant", "content": turn.assistant_message})
+                    
+        except Exception as e:
+            logger.warning(f"Failed to retrieve conversation history: {e}")
+            # Continue without history if there's an error
+        
+        # Add current user message
+        messages.append({"role": "user", "content": request.message})
 
         # Step 3: Call LLM using unified client
         llm_start = time.time()
         
         # Use unified LLM client (supports OpenAI, Claude, Groq)
         assistant_message = await asyncio.to_thread(
-            llm_client.chat_completion,
+            get_llm_client().chat_completion,
             messages=messages,
             temperature=0.7,
             max_tokens=1000,
@@ -812,7 +877,7 @@ async def get_conversation_history(
     """
     try:
         turns = await conversation_storage.get_recent_turns(
-            user_id=current_user.user_id,
+            user_id=current_user.user_id,  # ✅ Already correct - user_id passed
             limit=limit,
             before_turn=before_turn,
         )
@@ -1044,9 +1109,9 @@ async def analyze_image(
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    Analyze an image using Groq Llama 3.2 Vision model.
+    Analyze an image or document using AI.
     
-    - **file**: Image file (PNG, JPEG, WEBP, GIF)
+    - **file**: Image (PNG, JPEG, WEBP, GIF) or Document (PDF, DOCX, PPTX)
     - **prompt**: Analysis prompt (default: detailed description)
     - **save_to_memory**: Whether to save analysis as a memory (default: true)
     
@@ -1058,22 +1123,47 @@ async def analyze_image(
         # Read file bytes
         file_bytes = await file.read()
         
-        # Validate image
-        is_valid, error_msg = vision_service.validate_image(file_bytes, file.filename)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=error_msg)
+        # Determine if it's an image or document (check both extension AND MIME type)
+        file_ext = file.filename.lower().rsplit('.', 1)[-1] if '.' in file.filename else ''
+        mime_type = file.content_type or ''
         
-        # Process image (resize, optimize, encode)
-        logger.info("🔄 Processing image...")
-        image_base64 = vision_service.process_image(file_bytes)
-        
-        # Analyze with vision model
-        logger.info("🤖 Analyzing with Groq Vision...")
-        result = await vision_service.analyze_image(
-            image_base64=image_base64,
-            prompt=prompt,
-            user_id=current_user.user_id
+        # Document detection (either by extension or MIME type)
+        is_document = (
+            file_ext in ['pdf', 'docx', 'doc', 'pptx', 'ppt'] or
+            'pdf' in mime_type or
+            'document' in mime_type or
+            'presentation' in mime_type
         )
+        
+        logger.info(f"🔍 File type detection: ext={file_ext}, mime={mime_type}, is_document={is_document}")
+        
+        if is_document:
+            # Process document
+            logger.info("🔄 Processing document...")
+            result = await vision_service.analyze_document(
+                file_bytes=file_bytes,
+                filename=file.filename,
+                prompt=prompt,
+                user_id=current_user.user_id
+            )
+        else:
+            # Process image
+            # Validate image
+            is_valid, error_msg = vision_service.validate_image(file_bytes, file.filename)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_msg)
+            
+            # Process image (resize, optimize, encode)
+            logger.info("🔄 Processing image...")
+            image_base64 = vision_service.process_image(file_bytes)
+            
+            # Analyze with vision model
+            logger.info("🤖 Analyzing with Groq Vision...")
+            result = await vision_service.analyze_image(
+                image_base64=image_base64,
+                prompt=prompt,
+                user_id=current_user.user_id
+            )
         
         if not result["success"]:
             raise HTTPException(

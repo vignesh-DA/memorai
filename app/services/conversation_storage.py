@@ -118,14 +118,16 @@ class ConversationStorage:
 
     async def get_recent_turns(
         self,
-        user_id: str,
+        user_id: Optional[str] = None,
+        conversation_id: Optional[UUID] = None,
         limit: int = 10,
         before_turn: Optional[int] = None,
     ) -> list[ConversationTurn]:
-        """Get recent conversation turns for a user.
+        """Get recent conversation turns for a user or specific conversation.
         
         Args:
-            user_id: User identifier
+            user_id: User identifier (optional if conversation_id provided)
+            conversation_id: Conversation identifier (optional, takes priority)
             limit: Maximum number of turns to retrieve
             before_turn: Only get turns before this number
             
@@ -133,44 +135,54 @@ class ConversationStorage:
             List of conversation turns
         """
         try:
-            if before_turn is not None:
-                query = text("""
-                    SELECT * FROM conversation_turns
-                    WHERE user_id = :user_id
-                    AND turn_number < :before_turn
-                    ORDER BY turn_number DESC
-                    LIMIT :limit
-                """)
-                params = {
-                    "user_id": user_id,
-                    "before_turn": before_turn,
-                    "limit": limit,
-                }
+            # Build base conditions
+            conditions = []
+            params = {"limit": limit}
+            
+            if conversation_id:
+                conditions.append("conversation_id = :conversation_id")
+                params["conversation_id"] = conversation_id
+            elif user_id:
+                conditions.append("user_id = :user_id")
+                params["user_id"] = user_id
             else:
-                query = text("""
-                    SELECT * FROM conversation_turns
-                    WHERE user_id = :user_id
-                    ORDER BY turn_number DESC
-                    LIMIT :limit
-                """)
-                params = {"user_id": user_id, "limit": limit}
+                raise ValueError("Either user_id or conversation_id must be provided")
+            
+            if before_turn is not None:
+                conditions.append("turn_number < :before_turn")
+                params["before_turn"] = before_turn
+            
+            where_clause = " AND ".join(conditions)
+            
+            query = text(f"""
+                SELECT * FROM conversation_turns
+                WHERE {where_clause}
+                ORDER BY turn_number DESC
+                LIMIT :limit
+            """)
 
             result = await self.session.execute(query, params)
             rows = result.fetchall()
 
             turns = []
             for row in rows:
+                # 🔧 FIX: Handle metadata - may already be dict from Postgres
+                metadata = row[7] if row[7] else {}
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                
                 turns.append(
                     ConversationTurn(
-                        turn_id=row[0],  # asyncpg returns UUID objects already
-                        user_id=row[1],
-                        turn_number=row[2],
-                        user_message=row[3],
-                        assistant_message=row[4] or "",
-                        timestamp=row[5],
-                        metadata=json.loads(row[6]) if row[6] else {},
-                        memories_retrieved=row[7] or [],  # Already UUID array
-                        memories_created=row[8] or [],  # Already UUID array
+                        turn_id=row[0],  # turn_id UUID
+                        conversation_id=row[1],  # conversation_id UUID (was missing!)
+                        user_id=row[2],  # user_id VARCHAR
+                        turn_number=row[3],  # turn_number INTEGER
+                        user_message=row[4],  # user_message TEXT
+                        assistant_message=row[5] or "",  # assistant_message TEXT
+                        timestamp=row[6],  # timestamp TIMESTAMP
+                        metadata=metadata,  # metadata JSONB
+                        memories_retrieved=row[8] or [],  # memories_retrieved UUID[]
+                        memories_created=row[9] or [],  # memories_created UUID[]
                     )
                 )
 

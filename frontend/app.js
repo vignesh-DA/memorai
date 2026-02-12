@@ -725,17 +725,23 @@ function handleImageSelect(e) {
     const file = e.target.files[0];
     if (!file) return;
     
-    // Validate file type
-    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'];
+    // Validate file type (images and documents)
+    const validTypes = [
+        'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ];
     if (!validTypes.includes(file.type)) {
-        showToast('Please select a PNG, JPEG, WebP, or GIF image', 'error');
+        showToast('Please select an image (PNG, JPEG, WebP, GIF) or document (PDF, DOCX, PPTX)', 'error');
         return;
     }
     
-    // Validate file size (5MB max)
-    const maxSize = 5 * 1024 * 1024;
+    // Validate file size (10MB max for documents, 5MB for images)
+    const maxSize = file.type.startsWith('image/') ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
     if (file.size > maxSize) {
-        showToast('Image must be less than 5MB', 'error');
+        const maxSizeMB = file.type.startsWith('image/') ? '5MB' : '10MB';
+        showToast(`File must be less than ${maxSizeMB}`, 'error');
         return;
     }
     
@@ -746,12 +752,20 @@ function handleImageSelect(e) {
     const reader = new FileReader();
     reader.onload = (e) => {
         imageState.previewUrl = e.target.result;
-        elements.imagePreview.src = e.target.result;
+        
+        // Show preview differently for images vs documents
+        if (file.type.startsWith('image/')) {
+            elements.imagePreview.src = e.target.result;
+            elements.messageInput.placeholder = 'Describe what you want to know about this image...';
+        } else {
+            // For documents, show file icon
+            const docIcon = file.type.includes('pdf') ? '📄' : file.type.includes('word') ? '📝' : '📊';
+            elements.imagePreview.src = 'data:image/svg+xml;base64,' + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="50%" y="50%" text-anchor="middle" dy=".3em" font-size="60">${docIcon}</text></svg>`);
+            elements.messageInput.placeholder = 'What would you like to extract from this document?';
+        }
+        
         elements.imageFileName.textContent = file.name;
         elements.imagePreviewContainer.style.display = 'block';
-        
-        // Update placeholder
-        elements.messageInput.placeholder = 'Describe what you want to know about this image...';
     };
     reader.readAsDataURL(file);
 }
@@ -759,11 +773,13 @@ function handleImageSelect(e) {
 function clearImageSelection() {
     imageState.selectedFile = null;
     imageState.previewUrl = null;
-    elements.imagePreview.src = '';
-    elements.imageFileName.textContent = '';
-    elements.imagePreviewContainer.style.display = 'none';
-    elements.imageInput.value = '';
-    elements.messageInput.placeholder = 'Type your message...';
+    
+    // Safe DOM manipulation with null checks
+    if (elements.imagePreview) elements.imagePreview.src = '';
+    if (elements.imageFileName) elements.imageFileName.textContent = '';
+    if (elements.imagePreviewContainer) elements.imagePreviewContainer.style.display = 'none';
+    if (elements.imageInput) elements.imageInput.value = '';
+    if (elements.messageInput) elements.messageInput.placeholder = 'Type your message...';
 }
 
 async function analyzeImageWithVision(file, prompt) {
@@ -939,6 +955,12 @@ async function sendMessage() {
 
 // Add Message to Chat
 function addMessage(type, content, turn, meta = {}) {
+    // Ensure chat container exists
+    if (!elements.chatMessages) {
+        console.error('Chat messages container not found');
+        return;
+    }
+    
     const messageWrapper = document.createElement('div');
     messageWrapper.className = `message-wrapper ${type}`;
     
@@ -961,11 +983,15 @@ function addMessage(type, content, turn, meta = {}) {
             ${headerText}
             ${metaHtml}
         </div>
-        <div class="message-content">${escapeHtml(content)}</div>
+        <div class="message-content">${type === 'assistant' ? formatMessage(content) : escapeHtml(content)}</div>
     `;
     
-    elements.chatMessages.appendChild(messageWrapper);
-    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    try {
+        elements.chatMessages.appendChild(messageWrapper);
+        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    } catch (error) {
+        console.error('Error adding message to DOM:', error);
+    }
 }
 
 // Show Loading Indicator
@@ -987,8 +1013,15 @@ function showLoading() {
 
 // Hide Loading Indicator
 function hideLoading() {
-    const loading = document.getElementById('loadingIndicator');
-    if (loading) loading.remove();
+    try {
+        const loading = document.getElementById('loadingIndicator');
+        if (loading && loading.parentNode) {
+            loading.remove();
+        }
+    } catch (error) {
+        // Suppress DOM errors during async cleanup
+        console.debug('Loading indicator already removed:', error.message);
+    }
 }
 
 // Load Statistics
@@ -1130,6 +1163,27 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Format message with code blocks
+function formatMessage(text) {
+    // Escape HTML first
+    let escaped = escapeHtml(text);
+    
+    // Replace code blocks with styled divs
+    // Match ```language\ncode\n```
+    escaped = escaped.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+        const language = lang || 'code';
+        return `<div class="code-block"><div class="code-lang">${language}</div><pre><code>${code.trim()}</code></pre></div>`;
+    });
+    
+    // Replace inline code with `code`
+    escaped = escaped.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+    
+    // Preserve line breaks
+    escaped = escaped.replace(/\n/g, '<br>');
+    
+    return escaped;
 }
 
 // Check API Health

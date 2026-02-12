@@ -21,6 +21,7 @@ try:
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None
     logger.warning("sentence-transformers not available")
 
 

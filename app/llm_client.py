@@ -20,23 +20,31 @@ class UnifiedLLMClient:
         """Initialize clients based on configuration."""
         self.provider = settings.llm_provider
         
-        # Initialize OpenAI client
-        if settings.openai_api_key:
+        # Initialize only the selected provider to avoid unnecessary errors
+        self.openai_client = None
+        self.anthropic_client = None
+        self.groq_client = None
+        
+        # Initialize OpenAI client only if selected and key provided
+        if (self.provider == "openai" and settings.openai_api_key and 
+            settings.openai_api_key != "your_openai_api_key_here"):
             self.openai_client = OpenAI(api_key=settings.openai_api_key)
-        else:
-            self.openai_client = None
 
-        # Initialize Anthropic client
-        if settings.anthropic_api_key and settings.anthropic_api_key != "your_anthropic_api_key_here":
+        # Initialize Anthropic client only if selected and key provided
+        elif (self.provider == "anthropic" and settings.anthropic_api_key and 
+              settings.anthropic_api_key != "your_anthropic_api_key_here"):
             self.anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
-        else:
-            self.anthropic_client = None
 
-        # Initialize Groq client
-        if settings.groq_api_key and settings.groq_api_key != "your_groq_api_key_here":
+        # Initialize Groq client only if selected and key provided
+        elif (self.provider == "groq" and settings.groq_api_key and 
+              settings.groq_api_key != "your_groq_api_key_here"):
             self.groq_client = Groq(api_key=settings.groq_api_key)
+        
+        # Fallback: if no valid provider, create a mock client for testing
         else:
+            print(f"⚠️  No valid API key found for provider '{self.provider}'. Using mock responses.")
             self.groq_client = None
+            self.provider = "mock"
 
     def chat_completion(
         self,
@@ -111,6 +119,10 @@ class UnifiedLLMClient:
                 max_tokens=max_tokens,
             )
             return response.choices[0].message.content
+
+        # Mock provider for testing
+        elif provider == "mock":
+            return "This is a mock response. Please configure a valid LLM provider API key."
 
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
@@ -202,8 +214,21 @@ class UnifiedLLMClient:
 
 
 # Global client instance
-llm_client = UnifiedLLMClient()
+llm_client = None
 
 def get_llm_client() -> UnifiedLLMClient:
     """Get the global LLM client instance."""
+    global llm_client
+    if llm_client is None:
+        try:
+            llm_client = UnifiedLLMClient()
+            print(f"✅ LLM Client initialized successfully with provider: {llm_client.provider}")
+        except Exception as e:
+            print(f"❌ Failed to initialize LLM client: {e}")
+            # Create a mock client to prevent crashes
+            llm_client = UnifiedLLMClient.__new__(UnifiedLLMClient)
+            llm_client.provider = "mock"
+            llm_client.openai_client = None
+            llm_client.anthropic_client = None
+            llm_client.groq_client = None
     return llm_client

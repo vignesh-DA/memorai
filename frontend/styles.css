@@ -337,12 +337,53 @@ body {
     font-size: 15px;
     line-height: 1.6;
     color: #1a1a1a;
-    white-space: pre-wrap;
     word-wrap: break-word;
 }
 
 .message-wrapper.user .message-content {
     color: #1a1a1a;
+}
+
+/* Code blocks */
+.code-block {
+    margin: 12px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #1e1e1e;
+    border: 1px solid #333;
+}
+
+.code-lang {
+    background: #2d2d2d;
+    color: #6b9eff;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #333;
+}
+
+.code-block pre {
+    margin: 0;
+    padding: 16px;
+    overflow-x: auto;
+}
+
+.code-block code {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #d4d4d4;
+}
+
+.inline-code {
+    background: #f4f4f4;
+    color: #e01e5a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
 }
 
 .loading-indicator {

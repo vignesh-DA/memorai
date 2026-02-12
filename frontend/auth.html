@@ -405,7 +405,7 @@
                 
                 // Redirect to chat
                 setTimeout(() => {
-                    window.location.href = '/';
+                    window.location.href = '/app';
                 }, 1000);
 
             } catch (error) {
@@ -490,7 +490,7 @@
 
         // Check if already logged in
         if (localStorage.getItem('access_token')) {
-            window.location.href = '/';
+            window.location.href = '/app';
         }
 
         // Real-time password confirmation validation

@@ -1,13 +1,17 @@
 """Main FastAPI application - Production Grade."""
 
+import os
 import logging
 import sys
 from contextlib import asynccontextmanager
 
+# 🔧 FIX: Disable Torch Dynamo to prevent ONNX import errors
+os.environ["TORCH_DISABLE_DYNAMO"] = "1"
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
@@ -27,13 +31,29 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-# Initialize Sentry for error tracking (production)
+# Initialize Sentry for error tracking (production) - OPTIONAL
 if settings.sentry_dsn:
     try:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastApiIntegration
         from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
         from sentry_sdk.integrations.redis import RedisIntegration
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            integrations=[
+                FastApiIntegration(),
+                SqlalchemyIntegration(), 
+                RedisIntegration(),
+            ],
+            traces_sample_rate=0.1,
+            environment=settings.environment,
+        )
+        logger.info("✅ Sentry initialized for error tracking")
+    except ImportError:
+        logger.warning("⚠️  Sentry SDK not available - error tracking disabled")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Sentry: {e}")
         
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
@@ -317,27 +337,33 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router)  # Authentication routes
 app.include_router(router)  # Memory routes
 
-# Mount static files
+# Mount static files FIRST (before catch-all routes)
 from pathlib import Path
 frontend_path = Path(__file__).parent.parent / "frontend"
 if frontend_path.exists():
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
 
 
-# Root endpoint - Redirect to UI
-@app.get("/")
-async def root():
-    """Root endpoint - serves the UI."""
+# Specific page endpoints (BEFORE root redirect to avoid conflicts)
+@app.get("/app")
+async def serve_app():
+    """Serve the main application (after login)."""
     ui_path = frontend_path / "index.html"
     return FileResponse(ui_path)
 
 
-# Auth page endpoint
 @app.get("/auth.html")
 async def serve_auth():
     """Serve the authentication page."""
     auth_path = frontend_path / "auth.html"
     return FileResponse(auth_path)
+
+
+# Root endpoint - Redirect to auth page (LAST to not catch other routes)
+@app.get("/")
+async def root():
+    """Root endpoint - redirects to login page."""
+    return RedirectResponse(url="/auth.html", status_code=302)
 
 
 # API info endpoint
