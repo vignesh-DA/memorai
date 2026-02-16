@@ -350,7 +350,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 Team: Data Visionaries
 Developer: Vignesh
 GitHub: @vignesh-DA
-Username: vigneshgogula9
+email: vigneshgogula9
 Repository: github.com/vignesh-DA/memorai
 
 Support
