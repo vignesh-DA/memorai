@@ -2,10 +2,10 @@
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import Memory, MemoryType
@@ -111,9 +111,10 @@ class CanonicalMemoryResolver:
         )
         
         if existing_memory:
+            memory_id = existing_memory["memory_id"]
             logger.info(
                 f"🔄 Canonical update detected: '{canonical_key}' "
-                f"(updating memory {existing_memory.memory_id})"
+                f"(updating memory {memory_id})"
             )
             
             # Update existing memory instead of creating new one
@@ -124,7 +125,7 @@ class CanonicalMemoryResolver:
                 turn_number=turn_number,
             )
             
-            return True, existing_memory.memory_id
+            return True, memory_id
         
         # No existing canonical memory found - create new (potential canonical)
         logger.debug(f"📝 New canonical memory: '{canonical_key}'")
@@ -153,7 +154,7 @@ class CanonicalMemoryResolver:
         user_id: str,
         canonical_key: str,
         memory_type: MemoryType,
-    ) -> Optional[Memory]:
+    ) -> Optional[dict]:
         """Find existing canonical memory by key.
         
         Args:
@@ -168,26 +169,45 @@ class CanonicalMemoryResolver:
         patterns = self.CANONICAL_KEYS.get(canonical_key, [])
         
         for pattern in patterns:
-            stmt = (
-                select(Memory)
-                .where(Memory.user_id == user_id)
-                .where(Memory.type == memory_type)
-                .where(Memory.content.ilike(f"%{pattern}%"))
-                .order_by(Memory.created_at.desc())
-                .limit(1)
+            query = text("""
+                SELECT memory_id, user_id, type, content, source_turn, 
+                       created_at, confidence, importance_score
+                FROM memories
+                WHERE user_id = :user_id
+                  AND type = :memory_type
+                  AND content ILIKE :pattern
+                ORDER BY created_at DESC
+                LIMIT 1
+            """)
+            
+            result = await self.session.execute(
+                query,
+                {
+                    "user_id": user_id,
+                    "memory_type": memory_type,
+                    "pattern": f"%{pattern}%"
+                }
             )
+            row = result.fetchone()
             
-            result = await self.session.execute(stmt)
-            memory = result.scalar_one_or_none()
-            
-            if memory:
-                return memory
+            if row:
+                # Return as dict with column names
+                return {
+                    "memory_id": row[0],
+                    "user_id": row[1],
+                    "type": row[2],
+                    "content": row[3],
+                    "source_turn": row[4],
+                    "created_at": row[5],
+                    "confidence": row[6],
+                    "importance_score": row[7],
+                }
         
         return None
     
     async def _update_canonical_memory(
         self,
-        memory: Memory,
+        memory: Union[Memory, dict],
         new_content: str,
         confidence: float,
         turn_number: int,
@@ -200,28 +220,29 @@ class CanonicalMemoryResolver:
             confidence: New confidence score
             turn_number: Current turn number
         """
-        # Extract version from metadata
-        version = 1
-        if hasattr(memory, 'metadata') and memory.metadata:
-            version = getattr(memory.metadata, 'version', 1) + 1
+        # Update memory in place using raw SQL
+        query = text("""
+            UPDATE memories
+            SET content = :content,
+                confidence = :confidence,
+                source_turn = :source_turn,
+                last_accessed = :last_accessed
+            WHERE memory_id = :memory_id
+        """)
         
-        # Update memory in place
-        stmt = (
-            update(Memory)
-            .where(Memory.memory_id == memory.memory_id)
-            .values(
-                content=new_content,
-                confidence=confidence,
-                source_turn=turn_number,  # Update to latest turn
-                last_accessed=datetime.utcnow(),
-                # Note: metadata version would need JSON update (future enhancement)
-            )
+        await self.session.execute(
+            query,
+            {
+                "memory_id": str(memory["memory_id"]) if isinstance(memory, dict) else str(memory.memory_id),
+                "content": new_content,
+                "confidence": confidence,
+                "source_turn": turn_number,
+                "last_accessed": datetime.utcnow(),
+            }
         )
-        
-        await self.session.execute(stmt)
         await self.session.commit()
         
+        memory_id = memory["memory_id"] if isinstance(memory, dict) else memory.memory_id
         logger.info(
-            f"✅ Updated canonical memory {memory.memory_id} "
-            f"(version {version}): {new_content[:50]}..."
+            f"✅ Updated canonical memory {memory_id}: {new_content[:50]}..."
         )

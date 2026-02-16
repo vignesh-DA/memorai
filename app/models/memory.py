@@ -18,6 +18,7 @@ class MemoryType(str, Enum):
     COMMITMENT = "commitment"  # Promises, tasks, reminders
     INSTRUCTION = "instruction"  # How to interact with user
     ENTITY = "entity"  # People, places, things mentioned
+    EPISODIC = "episodic"  # Conversational memories (past interactions)
 
 
 class MemoryMetadata(BaseModel):

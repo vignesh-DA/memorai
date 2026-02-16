@@ -513,6 +513,13 @@ async def process_conversation(
         # 🔥 PRODUCTION FEATURE: Memory Silence Detection
         # If max relevance score < 0.30, don't inject long-term memory (lowered for demo/testing)
         max_relevance = max([r.relevance_score for r in search_results], default=0.0)
+        
+        # 🔍 DEBUG: Log top memories and their scores
+        if search_results:
+            logger.info(f"🔍 Top 5 retrieved memories for query '{request.message[:50]}':")
+            for i, result in enumerate(search_results[:5], 1):
+                logger.info(f"  {i}. [{result.relevance_score:.3f}] {result.memory.content[:80]}...")
+        
         # ✅ FIX #3: Protect knowledge queries from silence mode
         silence_mode = (
             max_relevance < 0.30
