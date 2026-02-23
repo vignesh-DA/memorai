@@ -265,7 +265,7 @@ class VisionService:
                 raise ValueError(f"Unsupported document type: {file_ext}")
             
             if not text.strip():
-                raise ValueError("No text extracted from document")
+                raise ValueError("No text could be extracted from this document. It may be a scanned PDF or image-based file. Please try uploading an image version instead, or a text-based PDF/DOCX/PPTX.")
             
             logger.info(f"Extracted {len(text)} chars from {filename}")
             
@@ -274,7 +274,7 @@ class VisionService:
             
             response = await self.llm_client.generate_completion_async(
                 messages=[{"role": "user", "content": full_prompt}],
-                model=settings.LLM_MODEL,
+                model=settings.groq_model,
                 temperature=0.7,
                 max_tokens=1500
             )
@@ -286,7 +286,7 @@ class VisionService:
             return {
                 "analysis": analysis_text,
                 "extracted_text": text[:500] + "..." if len(text) > 500 else text,
-                "model": settings.LLM_MODEL,
+                "model": settings.groq_model,
                 "prompt": prompt,
                 "success": True
             }
@@ -295,7 +295,7 @@ class VisionService:
             logger.error(f"Document analysis failed: {e}", exc_info=True)
             return {
                 "analysis": None,
-                "model": settings.LLM_MODEL,
+                "model": settings.groq_model,
                 "prompt": prompt,
                 "success": False,
                 "error": str(e)

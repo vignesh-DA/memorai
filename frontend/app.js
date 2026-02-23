@@ -1,6 +1,15 @@
 // API Configuration - Use dynamic origin for flexibility
 const API_BASE = `${window.location.origin}/api/v1`;
 const MAX_RETRIES = 3;
+
+// Safe Base64 encoder that handles emojis and non-Latin-1 characters
+function utf8ToBase64(str) {
+    const utf8Encoded = encodeURIComponent(str);
+    const latin1String = utf8Encoded.replace(/%([0-9A-F]{2})/g, function(match, p1) {
+        return String.fromCharCode('0x' + p1);
+    });
+    return btoa(latin1String);
+}
 const RETRY_DELAY = 1000; // ms
 const REQUEST_TIMEOUT = 30000; // 30s
 
@@ -760,7 +769,7 @@ function handleImageSelect(e) {
         } else {
             // For documents, show file icon
             const docIcon = file.type.includes('pdf') ? '📄' : file.type.includes('word') ? '📝' : '📊';
-            elements.imagePreview.src = 'data:image/svg+xml;base64,' + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="50%" y="50%" text-anchor="middle" dy=".3em" font-size="60">${docIcon}</text></svg>`);
+            elements.imagePreview.src = 'data:image/svg+xml;base64,' + utf8ToBase64(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="50%" y="50%" text-anchor="middle" dy=".3em" font-size="60">${docIcon}</text></svg>`);
             elements.messageInput.placeholder = 'What would you like to extract from this document?';
         }
         
