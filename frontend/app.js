@@ -1,5 +1,17 @@
-// API Configuration - Use dynamic origin for flexibility
-const API_BASE = `${window.location.origin}/api/v1`;
+// API Configuration - Support environment-based URLs for multi-domain deployment
+// For Vercel: Set via vercel.json env or window.__API_BASE_URL
+let API_BASE;
+if (typeof window.__API_BASE_URL !== 'undefined' && window.__API_BASE_URL) {
+    API_BASE = window.__API_BASE_URL;
+} else if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    // Development: same origin
+    API_BASE = `${window.location.origin}/api/v1`;
+} else {
+    // Production fallback: check for environment variable or use origin
+    // On Vercel, you must set VITE_API_BASE_URL environment variable
+    const backendUrl = typeof process !== 'undefined' && process.env?.VITE_API_BASE_URL;
+    API_BASE = backendUrl || `${window.location.origin}/api/v1`;
+}
 const MAX_RETRIES = 3;
 
 // Safe Base64 encoder that handles emojis and non-Latin-1 characters

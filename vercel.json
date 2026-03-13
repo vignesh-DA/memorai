@@ -1,0 +1,36 @@
+{
+  "buildCommand": "node -e \"const fs=require('fs'); const apiUrl=process.env.VITE_API_BASE_URL||''; if(apiUrl) { const cfg='window.__API_BASE_URL=\\''+apiUrl+'\\';'; fs.writeFileSync('frontend/config.js', cfg); }\"",
+  "outputDirectory": "frontend",
+  "env": {
+    "VITE_API_BASE_URL": {
+      "description": "Backend API base URL (e.g., https://memorai-api.onrender.com/api/v1). Required for production multi-domain deployment.",
+      "required": false
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/:path*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/static/:path*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/app"
+    }
+  ]
+}
