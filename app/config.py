@@ -99,7 +99,19 @@ class Settings(BaseSettings):
     rate_limit_global_per_minute: int = 1000  # Global limit
     
     # CORS Security
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000", "http://localhost:8000"])
+    # In development: Allow all origins (*)
+    # In production: Set CORS_ORIGINS environment variable with comma-separated URLs
+    # Example: CORS_ORIGINS=https://example.vercel.app,https://api.example.com
+    # Default includes Vercel domains and localhost for development
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:8000",
+            "https://*.vercel.app",  # All Vercel preview and production domains
+        ]
+    )
     cors_allow_credentials: bool = True
     
     # Security Headers

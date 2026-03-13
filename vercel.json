@@ -2,10 +2,7 @@
   "buildCommand": "node -e \"const fs=require('fs'); const apiUrl=process.env.VITE_API_BASE_URL||''; if(apiUrl) { const cfg='window.__API_BASE_URL=\\''+apiUrl+'\\';'; fs.writeFileSync('frontend/config.js', cfg); }\"",
   "outputDirectory": "frontend",
   "env": {
-    "VITE_API_BASE_URL": {
-      "description": "Backend API base URL (e.g., https://memorai-api.onrender.com/api/v1). Required for production multi-domain deployment.",
-      "required": false
-    }
+    "VITE_API_BASE_URL": "Backend API base URL (e.g., https://memorai-api.onrender.com/api/v1). Optional - set only if deploying backend separately."
   },
   "headers": [
     {

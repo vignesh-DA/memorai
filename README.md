@@ -11,7 +11,7 @@
 
 **A production-grade memory system that enables AI assistants to remember conversations across 1,000+ turns with sub-250ms retrieval latency.**
 
-[Features](#-features) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [API Docs](#-api-documentation) • [Contact](#-contact)
+[Features](#-features) • [Quick Start](#-quick-start) • [Production Deployment](#-production-deployment) • [Architecture](#-architecture) • [API Docs](#-api-documentation) • [Contact](#-contact)
 
 </div>
 
@@ -155,6 +155,29 @@ MEMORY_CONFIDENCE_THRESHOLD=0.7
 
 - **Groq**: https://console.groq.com/keys (Free tier: 30 req/min)
 - **Pinecone**: https://app.pinecone.io/ (Free tier: 1 pod, 100K vectors)
+
+---
+
+## 🚀 Production Deployment
+
+**Ready to deploy MemorAI to production?**
+
+See [**VERCEL_DEPLOYMENT.md**](VERCEL_DEPLOYMENT.md) for a complete step-by-step guide:
+
+- ✅ Deploy frontend on **Vercel** (CDN, auto-scaling)
+- ✅ Deploy backend on **Render/Railway** (FastAPI service)
+- ✅ Setup **PostgreSQL** + **pgvector** (Neon or Supabase)
+- ✅ Configure environment variables
+- ✅ Connect frontend to API
+- ✅ Monitor and troubleshoot
+
+**Quick summary:**
+1. Push code to GitHub
+2. Connect repo to Vercel (frontend auto-deploys)
+3. Deploy backend to Render/Railway with env vars
+4. Set `VITE_API_BASE_URL` in Vercel settings
+5. Redeploy frontend
+6. Done! ✨
 
 ---
 
